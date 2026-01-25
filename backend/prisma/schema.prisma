@@ -1,15 +1,44 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+model StockPrice {
+  id            Int      @id @default(autoincrement())
+  symbol        String   @db.VarChar(10)
+  date          DateTime @db.Date
+  open          Decimal  @db.Decimal(12, 4)
+  high          Decimal  @db.Decimal(12, 4)
+  low           Decimal  @db.Decimal(12, 4)
+  close         Decimal  @db.Decimal(12, 4)
+  volume        BigInt
+  change        Decimal  @db.Decimal(12, 4)
+  changePercent Decimal  @db.Decimal(12, 6)
+  vwap          Decimal  @db.Decimal(12, 4)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([symbol, date])
+  @@index([symbol, date(sort: Desc)])
+  @@map("stock_prices")
+}
+
+model FinancialRatio {
+  id         Int      @id @default(autoincrement())
+  symbol     String   @db.VarChar(10)
+  date       DateTime @db.Date
+  peRatio    Decimal? @db.Decimal(12, 4)
+  priceToFcf Decimal? @db.Decimal(12, 4)
+  priceToOcf Decimal? @db.Decimal(12, 4)
+  marketCap  BigInt?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([symbol, date])
+  @@index([symbol, date(sort: Desc)])
+  @@map("financial_ratios")
 }
