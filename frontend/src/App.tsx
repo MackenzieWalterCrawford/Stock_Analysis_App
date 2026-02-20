@@ -1,35 +1,44 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { Layout } from './components/Layout';
+import { StockSearch } from './components/StockSearch';
+import { TimeframeSelector } from './components/TimeframeSelector';
+import { PriceChart } from './components/PriceChart';
+import { RatioChart } from './components/RatioChart';
+import { DataTable } from './components/DataTable';
+import { useStockData } from './hooks/useStockData';
+import './App.css';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const { symbols, setSymbols, timeframe, setTimeframe, priceData, ratioData, loading, error } =
+    useStockData();
+
+  const primary = symbols[0];
+  const secondary = symbols[1];
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    <Layout>
+      <StockSearch symbols={symbols} onSymbolsChange={setSymbols} />
+      <TimeframeSelector value={timeframe} onChange={setTimeframe} />
+      {error && <div className="error-banner">{error}</div>}
+      {primary !== undefined && (
+        <>
+          <PriceChart symbols={symbols} priceData={priceData} loading={loading} />
+          {secondary !== undefined && (
+            <RatioChart
+              base={primary}
+              compare={secondary}
+              ratioData={ratioData}
+              loading={loading}
+            />
+          )}
+          <DataTable
+            symbol={primary}
+            data={priceData.get(primary) ?? []}
+            loading={loading}
+          />
+        </>
+      )}
+    </Layout>
+  );
 }
 
-export default App
+export default App;
