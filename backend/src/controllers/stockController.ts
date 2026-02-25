@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
 import { createStockService, StockServiceError } from '../services/stockService';
+import { createFundamentalService } from '../services/fundamentalService';
 
 const stockService = createStockService();
+const fundamentalService = createFundamentalService();
 
 const VALID_TIMEFRAMES = ['5Y', '1Y', 'YTD', '1M', '1W'];
 
@@ -138,6 +140,33 @@ export async function syncStock(req: Request, res: Response): Promise<void> {
   try {
     const result = await stockService.refreshData(symbol.toUpperCase());
     res.json({ success: true, data: toJSON(result) });
+  } catch (err) {
+    if (err instanceof StockServiceError) {
+      res.status(getStatusCode(err)).json({ success: false, error: err.message });
+    } else {
+      res.status(500).json({ success: false, error: 'Internal server error' });
+    }
+  }
+}
+
+export async function getFundamentals(req: Request, res: Response): Promise<void> {
+  const symbol = str(req.params.symbol);
+  const timeframe = str(req.query.timeframe, '1Y');
+
+  if (!isValidSymbol(symbol)) {
+    res.status(400).json({ success: false, error: 'Invalid symbol' });
+    return;
+  }
+  if (!isValidTimeframe(timeframe)) {
+    res
+      .status(400)
+      .json({ success: false, error: 'Invalid timeframe. Must be one of: 5Y, 1Y, YTD, 1M, 1W' });
+    return;
+  }
+
+  try {
+    const data = await fundamentalService.getFundamentals(symbol.toUpperCase(), timeframe);
+    res.json({ success: true, data: toJSON(data) });
   } catch (err) {
     if (err instanceof StockServiceError) {
       res.status(getStatusCode(err)).json({ success: false, error: err.message });

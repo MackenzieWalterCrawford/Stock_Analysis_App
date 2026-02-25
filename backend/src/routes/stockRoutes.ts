@@ -5,6 +5,7 @@ import {
   getRatio,
   syncStock,
   getDateRange,
+  getFundamentals,
 } from '../controllers/stockController';
 
 export const stockRouter = Router();
@@ -14,5 +15,6 @@ stockRouter.get('/ratio', getRatio);
 
 stockRouter.get('/:symbol/history', getHistory);
 stockRouter.get('/:symbol/latest', getLatest);
+stockRouter.get('/:symbol/fundamentals', getFundamentals);
 stockRouter.post('/:symbol/sync', syncStock);
 stockRouter.get('/:symbol/date-range', getDateRange);

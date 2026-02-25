@@ -1,19 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { RatioData, StockPriceData, Timeframe } from '../types/stock';
+import type { FundamentalDataPoint, StockPriceData, Timeframe } from '../types/stock';
 import * as api from '../api/stockApi';
 
 export function useStockData() {
-  const [symbols, setSymbols] = useState<string[]>([]);
-  const [timeframe, setTimeframe] = useState<Timeframe>('1M');
-  const [priceData, setPriceData] = useState<Map<string, StockPriceData[]>>(new Map());
-  const [ratioData, setRatioData] = useState<RatioData[]>([]);
+  const [symbol, setSymbol] = useState<string>('');
+  const [timeframe, setTimeframe] = useState<Timeframe>('1Y');
+  const [priceData, setPriceData] = useState<StockPriceData[]>([]);
+  const [fundamentals, setFundamentals] = useState<FundamentalDataPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
-    if (symbols.length === 0) {
-      setPriceData(new Map());
-      setRatioData([]);
+    if (!symbol) {
+      setPriceData([]);
+      setFundamentals([]);
       return;
     }
 
@@ -21,41 +21,31 @@ export function useStockData() {
     setError(null);
 
     try {
-      const newPriceData = new Map<string, StockPriceData[]>();
+      const [prices, funds] = await Promise.all([
+        api.getHistory(symbol, timeframe),
+        api.getFundamentals(symbol, timeframe).catch(() => [] as FundamentalDataPoint[]),
+      ]);
 
-      await Promise.all(
-        symbols.map(async (symbol) => {
-          const data = await api.getHistory(symbol, timeframe);
-          newPriceData.set(symbol, data);
-        })
-      );
-
-      setPriceData(newPriceData);
-
-      if (symbols.length >= 2) {
-        const ratio = await api.getRatio(symbols[0], symbols[1], timeframe);
-        setRatioData(ratio);
-      } else {
-        setRatioData([]);
-      }
+      setPriceData(prices);
+      setFundamentals(funds);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch data');
     } finally {
       setLoading(false);
     }
-  }, [symbols, timeframe]);
+  }, [symbol, timeframe]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
   return {
-    symbols,
-    setSymbols,
+    symbol,
+    setSymbol,
     timeframe,
     setTimeframe,
     priceData,
-    ratioData,
+    fundamentals,
     loading,
     error,
     refresh: fetchData,

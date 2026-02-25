@@ -30,15 +30,22 @@ model StockPrice {
 }
 
 model FinancialRatio {
-  id         Int      @id @default(autoincrement())
-  symbol     String   @db.VarChar(10)
-  date       DateTime @db.Date
-  peRatio    Decimal? @db.Decimal(12, 4)
-  priceToFcf Decimal? @db.Decimal(12, 4)
-  priceToOcf Decimal? @db.Decimal(12, 4)
-  marketCap  BigInt?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id               Int      @id @default(autoincrement())
+  symbol           String   @db.VarChar(10)
+  date             DateTime @db.Date
+  peRatio          Decimal? @db.Decimal(12, 4)
+  priceToFcf       Decimal? @db.Decimal(12, 4)
+  priceToOcf       Decimal? @db.Decimal(12, 4)
+  marketCap        BigInt?
+  fcf              BigInt?
+  eps              Decimal? @db.Decimal(12, 4)
+  revenue          BigInt?
+  revenueGrowthYoy Decimal? @db.Decimal(8, 4)
+  roe              Decimal? @db.Decimal(8, 4)
+  debtToEquity     Decimal? @db.Decimal(12, 4)
+  period           String?  @db.VarChar(20)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@unique([symbol, date])
   @@index([symbol, date(sort: Desc)])

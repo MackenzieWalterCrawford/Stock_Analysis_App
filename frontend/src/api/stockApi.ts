@@ -1,4 +1,4 @@
-import type { ApiResponse, DateRange, RatioData, StockPriceData, Timeframe } from '../types/stock';
+import type { ApiResponse, DateRange, FundamentalDataPoint, StockPriceData, Timeframe } from '../types/stock';
 
 const BASE_URL = '/api/stocks';
 
@@ -19,13 +19,12 @@ export async function getLatest(symbol: string): Promise<StockPriceData> {
   return fetchJson<StockPriceData>(`${BASE_URL}/${symbol}/latest`);
 }
 
-export async function getRatio(
-  base: string,
-  compare: string,
+export async function getFundamentals(
+  symbol: string,
   timeframe: Timeframe
-): Promise<RatioData[]> {
-  return fetchJson<RatioData[]>(
-    `${BASE_URL}/ratio?base=${base}&compare=${compare}&timeframe=${timeframe}`
+): Promise<FundamentalDataPoint[]> {
+  return fetchJson<FundamentalDataPoint[]>(
+    `${BASE_URL}/${symbol}/fundamentals?timeframe=${timeframe}`
   );
 }
 
