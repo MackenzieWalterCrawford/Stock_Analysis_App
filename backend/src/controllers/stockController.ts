@@ -138,7 +138,10 @@ export async function syncStock(req: Request, res: Response): Promise<void> {
   }
 
   try {
-    const result = await stockService.refreshData(symbol.toUpperCase());
+    const [result] = await Promise.all([
+      stockService.refreshData(symbol.toUpperCase()),
+      fundamentalService.refreshFundamentals(symbol.toUpperCase()),
+    ]);
     res.json({ success: true, data: toJSON(result) });
   } catch (err) {
     if (err instanceof StockServiceError) {

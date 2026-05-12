@@ -65,6 +65,7 @@ export class FundamentalFetcher {
   private prisma: PrismaClient;
   private apiKey: string;
   private baseUrl: string;
+  private v3BaseUrl = 'https://financialmodelingprep.com/api/v3';
   private batchSize: number;
 
   constructor(prisma?: PrismaClient) {
@@ -134,7 +135,7 @@ export class FundamentalFetcher {
     }
 
     const url =
-      `${this.baseUrl}/key-metrics?symbol=${symbol}&period=quarter&limit=40&apikey=${this.apiKey}`;
+      `${this.v3BaseUrl}/key-metrics/${symbol}?period=quarter&limit=40&apikey=${this.apiKey}`;
 
     console.log(`[FundamentalFetcher] Fetching key metrics for ${symbol}`);
 
@@ -155,10 +156,12 @@ export class FundamentalFetcher {
       if (axios.isAxiosError(error)) {
         const axiosError = error as AxiosError;
         if (axiosError.response?.status === 402 || axiosError.response?.status === 403) {
-          console.warn(
-            `[FundamentalFetcher] Key metrics endpoint requires paid FMP plan (HTTP ${axiosError.response.status})`
+          throw new FundamentalFetcherError(
+            `Key metrics endpoint requires a paid FMP plan (HTTP ${axiosError.response.status}). ` +
+            `Upgrade your FMP plan or the peRatio data will be unavailable.`,
+            'PLAN_REQUIRED',
+            axiosError.response.status
           );
-          return [];
         }
         if (axiosError.response?.status === 429) {
           throw new FundamentalFetcherError('API rate limit exceeded', 'RATE_LIMIT', 429);
@@ -177,7 +180,7 @@ export class FundamentalFetcher {
     }
 
     const url =
-      `${this.baseUrl}/income-statement?symbol=${symbol}&period=quarter&limit=40&apikey=${this.apiKey}`;
+      `${this.v3BaseUrl}/income-statement/${symbol}?period=quarter&limit=40&apikey=${this.apiKey}`;
 
     console.log(`[FundamentalFetcher] Fetching income statement for ${symbol}`);
 

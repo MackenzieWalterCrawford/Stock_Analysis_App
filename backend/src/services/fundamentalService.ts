@@ -1,5 +1,5 @@
 import { PrismaClient } from '../generated/prisma';
-import { startOfYear, subDays, subYears } from 'date-fns';
+import { startOfYear, subDays, subMonths, subYears } from 'date-fns';
 import { CacheService } from './cache';
 import { FundamentalFetcher } from './fundamentalFetcher';
 
@@ -52,9 +52,11 @@ export class FundamentalService {
     const { from, to } = this.calculateDateRange(timeframe);
     let dbRecords = await this.queryDatabase(normalizedSymbol, from, to);
 
-    // Layer 3: Fetch from API if empty
-    if (dbRecords.length === 0) {
-      console.log(`[FundamentalService] No DB data for ${normalizedSymbol}, fetching from API`);
+    // Layer 3: Fetch from API if empty or if all existing records have null peRatio
+    // (handles stale DB rows written before the v3 endpoint fix)
+    const needsSync = dbRecords.length === 0 || dbRecords.every((r) => r.peRatio === null);
+    if (needsSync) {
+      console.log(`[FundamentalService] Fetching from API for ${normalizedSymbol} (no data or peRatio missing)`);
       try {
         const syncResult = await this.fetcher.syncFundamentals(normalizedSymbol);
         if (syncResult.errors.length > 0) {
@@ -165,6 +167,11 @@ export class FundamentalService {
         break;
       default:
         from = subYears(today, 5); // fundamentals default to 5Y (quarterly data)
+    }
+
+    const minFrom = subMonths(today, 6);
+    if (from > minFrom) {
+      from = minFrom;
     }
 
     return { from, to: today };

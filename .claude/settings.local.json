@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node_modules/.bin/tsc:*)",
+      "Bash(node -e:*)",
+      "Bash(PSQL=\"/c/Program Files/PostgreSQL/17/bin/psql.exe\")",
+      "Bash(PGPASSWORD=\"postgres\" \"$PSQL\" -U postgres -c \"\\\\du\")",
+      "Bash(PGPASSWORD=\"password\" \"$PSQL\" -U postgres -c \"\\\\du\")",
+      "Bash(PGPASSWORD=\"admin\" \"$PSQL\" -U postgres -c \"\\\\du\")",
+      "Bash(PGPASSWORD=\"postgres\" \"$PSQL\":*)",
+      "Bash(node:*)",
+      "Bash(TMPFILE=\"$USERPROFILE/AppData/Local/Temp/sync_result.json\")",
+      "Bash(curl:*)"
+    ]
+  }
+}
