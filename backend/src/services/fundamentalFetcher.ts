@@ -1,6 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import { PrismaClient } from '../generated/prisma';
 import { parseISO } from 'date-fns';
+import SecEdgarFetcher, { QuarterlyEpsRecord } from './secEdgarFetcher';
 
 // ============================================================================
 // Types & Interfaces
@@ -23,6 +24,7 @@ interface FMPIncomeStatement {
   eps: number | null;
   epsDiluted: number | null;
   period: string | null;
+  cik?: string;
 }
 
 export interface FundamentalRecord {
@@ -65,14 +67,15 @@ export class FundamentalFetcher {
   private prisma: PrismaClient;
   private apiKey: string;
   private baseUrl: string;
-  private v3BaseUrl = 'https://financialmodelingprep.com/api/v3';
   private batchSize: number;
+  private secEdgar: SecEdgarFetcher;
 
   constructor(prisma?: PrismaClient) {
     this.prisma = prisma || new PrismaClient();
     this.apiKey = process.env.FMP_API_KEY || '';
     this.baseUrl = 'https://financialmodelingprep.com/stable';
     this.batchSize = 40;
+    this.secEdgar = new SecEdgarFetcher();
 
     if (!this.apiKey) {
       console.warn('[FundamentalFetcher] Warning: FMP_API_KEY not set');
@@ -103,12 +106,49 @@ export class FundamentalFetcher {
       ]);
 
       const merged = this.mergeFundamentals(normalizedSymbol, keyMetrics, incomeData);
+
+      const cik = incomeData.find((d) => d.cik)?.cik ?? null;
+      if (cik !== null) {
+        try {
+          const secRecords: QuarterlyEpsRecord[] = await this.secEdgar.fetchQuarterlyEps(cik);
+          const existingDates = new Set(
+            merged.map((r) => r.date.toISOString().slice(0, 10))
+          );
+          for (const sec of secRecords) {
+            const dateKey = sec.end.toISOString().slice(0, 10);
+            if (!existingDates.has(dateKey)) {
+              merged.push({
+                symbol: normalizedSymbol,
+                date: sec.end,
+                peRatio: null,
+                priceToFcf: null,
+                fcf: null,
+                eps: sec.eps,
+                revenue: null,
+                revenueGrowthYoy: null,
+                roe: null,
+                debtToEquity: null,
+                period: sec.period,
+              });
+              existingDates.add(dateKey);
+            }
+          }
+          merged.sort((a, b) => a.date.getTime() - b.date.getTime());
+        } catch (secError) {
+          console.error(
+            `[FundamentalFetcher] SEC EDGAR fetch failed for ${normalizedSymbol}:`,
+            secError instanceof Error ? secError.message : String(secError)
+          );
+        }
+      }
+
       const withGrowth = this.calculateRevenueGrowthYoy(merged);
+      const withPe = await this.calculatePeFromPrices(normalizedSymbol, withGrowth);
 
-      result.recordsFetched = withGrowth.length;
+      result.recordsFetched = withPe.length;
 
-      if (withGrowth.length > 0) {
-        result.recordsSaved = await this.saveToDatabase(normalizedSymbol, withGrowth);
+      if (withPe.length > 0) {
+        result.recordsSaved = await this.saveToDatabase(normalizedSymbol, withPe);
       }
 
       console.log(
@@ -135,7 +175,7 @@ export class FundamentalFetcher {
     }
 
     const url =
-      `${this.v3BaseUrl}/key-metrics/${symbol}?period=quarter&limit=40&apikey=${this.apiKey}`;
+      `${this.baseUrl}/key-metrics?symbol=${symbol}&period=quarter&limit=5&apikey=${this.apiKey}`;
 
     console.log(`[FundamentalFetcher] Fetching key metrics for ${symbol}`);
 
@@ -156,12 +196,11 @@ export class FundamentalFetcher {
       if (axios.isAxiosError(error)) {
         const axiosError = error as AxiosError;
         if (axiosError.response?.status === 402 || axiosError.response?.status === 403) {
-          throw new FundamentalFetcherError(
-            `Key metrics endpoint requires a paid FMP plan (HTTP ${axiosError.response.status}). ` +
-            `Upgrade your FMP plan or the peRatio data will be unavailable.`,
-            'PLAN_REQUIRED',
-            axiosError.response.status
+          console.warn(
+            `[FundamentalFetcher] Key metrics endpoint requires a paid FMP plan (HTTP ${axiosError.response.status}). ` +
+            `Will calculate P/E from price history and EPS instead.`
           );
+          return [];
         }
         if (axiosError.response?.status === 429) {
           throw new FundamentalFetcherError('API rate limit exceeded', 'RATE_LIMIT', 429);
@@ -180,7 +219,7 @@ export class FundamentalFetcher {
     }
 
     const url =
-      `${this.v3BaseUrl}/income-statement/${symbol}?period=quarter&limit=40&apikey=${this.apiKey}`;
+      `${this.baseUrl}/income-statement?symbol=${symbol}&period=quarter&limit=5&apikey=${this.apiKey}`;
 
     console.log(`[FundamentalFetcher] Fetching income statement for ${symbol}`);
 
@@ -310,6 +349,67 @@ export class FundamentalFetcher {
     records.sort((a, b) => a.date.getTime() - b.date.getTime());
 
     return records;
+  }
+
+  private async calculatePeFromPrices(
+    symbol: string,
+    records: FundamentalRecord[]
+  ): Promise<FundamentalRecord[]> {
+    if (records.length === 0) return records;
+
+    const dates = records.map((r) => r.date.getTime());
+    const minDate = new Date(Math.min(...dates));
+    const maxDate = new Date(Math.max(...dates));
+
+    const prices = await this.prisma.stockPrice.findMany({
+      where: { symbol, date: { gte: minDate, lte: maxDate } },
+      select: { date: true, close: true },
+      orderBy: { date: 'asc' },
+    });
+
+    if (prices.length === 0) return records;
+
+    const priceList = prices.map((p) => ({
+      time: p.date.getTime(),
+      close: Number(p.close),
+    }));
+
+    const sevenDays = 7 * 24 * 60 * 60 * 1000;
+    const findNearestPrice = (target: Date): number | null => {
+      const t = target.getTime();
+      let best: number | null = null;
+      let bestDiff = Infinity;
+      for (const p of priceList) {
+        const diff = Math.abs(p.time - t);
+        if (diff <= sevenDays && diff < bestDiff) {
+          bestDiff = diff;
+          best = p.close;
+        }
+      }
+      return best;
+    };
+
+    return records.map((record, index) => {
+      if (record.peRatio !== null || record.eps === null) return record;
+
+      // TTM EPS: sum current + up to 3 prior quarters
+      let ttmEps = record.eps;
+      let quartersFound = 1;
+      for (let i = 1; i <= 3 && index - i >= 0; i++) {
+        const prior = records[index - i];
+        if (prior.eps !== null) {
+          ttmEps += prior.eps;
+          quartersFound++;
+        }
+      }
+
+      if (quartersFound < 4 || ttmEps <= 0) return record;
+
+      const price = findNearestPrice(record.date);
+      if (price === null) return record;
+
+      return { ...record, peRatio: price / ttmEps };
+    });
   }
 
   private calculateRevenueGrowthYoy(records: FundamentalRecord[]): FundamentalRecord[] {

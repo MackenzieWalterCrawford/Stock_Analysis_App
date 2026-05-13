@@ -19,7 +19,7 @@ echo "[1/5] Starting PostgreSQL and Redis via Docker Compose..."
 docker-compose -f "$ROOT_DIR/docker-compose.yml" up -d
 
 echo "      Waiting for database services to be ready..."
-sleep 8
+sleep 3
 
 # Install backend dependencies if needed
 echo "[2/5] Checking backend dependencies..."
@@ -41,7 +41,6 @@ fi
 
 echo "[5/5] Starting servers..."
 echo ""
-sdfaf;m
 # Start backend - MUST cd into directory so dotenv finds .env file
 cd "$ROOT_DIR/backend"
 npm run dev &

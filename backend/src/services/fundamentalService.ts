@@ -37,10 +37,10 @@ export class FundamentalService {
     const normalizedSymbol = symbol.toUpperCase().trim();
     const cacheKey = `fundamental:history:${normalizedSymbol}:${timeframe}`;
 
-    // Layer 1: Cache
+    // Layer 1: Cache (skip if all peRatios are null — prices may not have been ready yet)
     try {
       const cached = await this.cacheService.get<FundamentalDataPoint[]>(cacheKey);
-      if (cached && cached.length > 0) {
+      if (cached && cached.length > 0 && cached.some((r) => r.peRatio !== null)) {
         console.log(`[FundamentalService] Cache hit for ${normalizedSymbol}:${timeframe}`);
         return cached;
       }
@@ -77,10 +77,12 @@ export class FundamentalService {
 
     const result = this.convertToDataPoints(dbRecords);
 
-    // Cache result (even empty, to avoid hammering API)
+    // Cache result; use short TTL if P/E is still missing so we retry once prices are loaded
     if (result.length > 0) {
       try {
-        await this.cacheService.set(cacheKey, result, FUNDAMENTAL_CACHE_TTL);
+        const hasPeRatio = result.some((r) => r.peRatio !== null);
+        const ttl = hasPeRatio ? FUNDAMENTAL_CACHE_TTL : 60;
+        await this.cacheService.set(cacheKey, result, ttl);
       } catch (error) {
         console.warn('[FundamentalService] Failed to cache data:', this.getErrorMessage(error));
       }
