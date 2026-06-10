@@ -10,7 +10,8 @@
       "Bash(PGPASSWORD=\"postgres\" \"$PSQL\":*)",
       "Bash(node:*)",
       "Bash(TMPFILE=\"$USERPROFILE/AppData/Local/Temp/sync_result.json\")",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(npm run *)"
     ]
   }
 }

@@ -1,6 +1,25 @@
 # CLAUDE.md
 
-**Read `AGENTS.md` first** for the full project operating manual: stack overview, architectural invariants, known gotchas, run commands, and the agent roster.
+## First-time orientation
+
+If this is your first session in this repo, here's the doc map:
+
+- **`CLAUDE.md`** (this file) — auto-loaded into every Claude Code session. Keep it short: delegation rules + the gotchas that bite most often.
+- **`AGENTS.md`** — the full operating manual. Read it before any non-trivial change: stack overview, architectural invariants, known gotchas, run commands, agent roster.
+- **`README.md`** — human-oriented setup (ports, credentials, npm scripts).
+- **`.claude/agents/*.md`** — the five specialist sub-agent definitions referenced below.
+
+**Read `AGENTS.md`** for the full project operating manual before making non-trivial changes.
+
+## Highest-value gotchas (always-in-context)
+
+Pulled from `AGENTS.md` so they're loaded every session. The full list lives there.
+
+1. **ROE is stored as a decimal fraction** (`0.28` = 28%). Multiply by 100 **exactly once** at display time. Double-multiplying (e.g., once in `mergeData`, once in `formatValue`) shows `2800%` — this has been a recurring bug. See `frontend/src/components/AnalysisChart.tsx` and `frontend/src/types/stock.ts`.
+2. **FMP `/stable/key-metrics` is paid-tier only.** On HTTP 402/403 the fetcher silently returns `[]`, so all ratios become null with no error. If ratios are mysteriously empty, check the API key tier before debugging code. See `backend/src/services/fundamentalFetcher.ts` (~line 157).
+3. **Fundamentals are quarterly, not daily.** The frontend forward-fills the latest quarterly value across each trading day. The step-function appearance of ratio lines is intentional — don't "fix" it. On `1W`/`1M` views a quarterly report may not fall inside the window, so the ratio renders empty; this is a known issue in `backend/src/services/fundamentalService.ts` (`calculateDateRange`).
+4. **Money fields are `BigInt`** (`revenue`, `freeCashFlow`, `volume`); ratios are `Decimal(12, 4)`. Serialize BigInt as string on the wire, convert to Number only at the API boundary, and be cautious above 2^53.
+5. **API response shape is always wrapped**: `{ success: boolean, data?: T, error?: string }`.
 
 ## Required: delegate to specialist agents
 
