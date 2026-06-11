@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { KeyboardEvent } from 'react';
+import { SearchIcon, XIcon } from './icons';
 import styles from './StockSearch.module.css';
 
 interface StockSearchProps {
@@ -31,15 +32,18 @@ export function StockSearch({ symbol, onSymbolChange }: StockSearchProps) {
       <div className={styles.inputs}>
         <div className={styles.inputGroup}>
           <label className={styles.label}>Symbol</label>
-          <input
-            className={styles.input}
-            type="text"
-            placeholder="e.g. AAPL"
-            value={input}
-            onChange={(e) => setInput(e.target.value.toUpperCase())}
-            onKeyDown={handleKeyDown}
-            maxLength={10}
-          />
+          <div className={styles.inputWrap}>
+            <SearchIcon size={18} className={styles.inputIcon} />
+            <input
+              className={styles.input}
+              type="text"
+              placeholder="e.g. AAPL"
+              value={input}
+              onChange={(e) => setInput(e.target.value.toUpperCase())}
+              onKeyDown={handleKeyDown}
+              maxLength={10}
+            />
+          </div>
         </div>
         <button className={styles.button} onClick={handleSearch}>
           Search
@@ -54,7 +58,7 @@ export function StockSearch({ symbol, onSymbolChange }: StockSearchProps) {
               onClick={handleClear}
               aria-label={`Remove ${symbol}`}
             >
-              ×
+              <XIcon size={13} />
             </button>
           </span>
         </div>

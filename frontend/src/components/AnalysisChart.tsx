@@ -10,6 +10,8 @@ import {
 } from 'recharts';
 import type { FundamentalDataPoint, MetricKey, StockPriceData } from '../types/stock';
 import { METRICS } from '../types/stock';
+import { useThemeTokens } from '../hooks/useThemeTokens';
+import { LineChartIcon } from './icons';
 import styles from './AnalysisChart.module.css';
 
 interface AnalysisChartProps {
@@ -84,6 +86,17 @@ export function AnalysisChart({
   onToggleMetric,
   loading,
 }: AnalysisChartProps) {
+  const c = useThemeTokens({
+    grid: '--border-hairline',
+    axis: '--text-muted',
+    axisLine: '--border-strong',
+    price: '--text-strong',
+    surface: '--surface-card',
+    border: '--border-hairline',
+    strong: '--text-strong',
+    body: '--text-body',
+  });
+
   if (loading) {
     return (
       <div className={styles.card}>
@@ -95,7 +108,10 @@ export function AnalysisChart({
   if (!symbol) {
     return (
       <div className={styles.card}>
-        <div className={styles.state}>Enter a symbol to view price data.</div>
+        <div className={styles.state}>
+          <LineChartIcon size={28} className={styles.stateIcon} />
+          Enter a symbol to view price data.
+        </div>
       </div>
     );
   }
@@ -103,7 +119,10 @@ export function AnalysisChart({
   if (priceData.length === 0) {
     return (
       <div className={styles.card}>
-        <div className={styles.state}>No data available for {symbol}.</div>
+        <div className={styles.state}>
+          <LineChartIcon size={28} className={styles.stateIcon} />
+          No data available for {symbol}.
+        </div>
       </div>
     );
   }
@@ -156,39 +175,43 @@ export function AnalysisChart({
             data={chartData}
             margin={{ top: 5, right: showRightAxis ? 70 : 20, left: 10, bottom: 5 }}
           >
-            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <CartesianGrid strokeDasharray="3 3" stroke={c.grid} vertical={false} />
             <XAxis
               dataKey="date"
               tickFormatter={formatDate}
-              tick={{ fontSize: 11, fill: '#718096' }}
+              tick={{ fontSize: 11, fill: c.axis, fontFamily: 'IBM Plex Mono, monospace' }}
               tickCount={8}
-              stroke="#cbd5e0"
+              stroke={c.axisLine}
             />
             <YAxis
               yAxisId="price"
               orientation="left"
               tickFormatter={(v: number) => formatPrice(v)}
-              tick={{ fontSize: 11, fill: '#718096' }}
+              tick={{ fontSize: 11, fill: c.axis, fontFamily: 'IBM Plex Mono, monospace' }}
               width={70}
-              stroke="#cbd5e0"
+              stroke={c.axisLine}
             />
             {showRightAxis && (
               <YAxis
                 yAxisId="metric"
                 orientation="right"
-                tick={{ fontSize: 11, fill: '#718096' }}
+                tick={{ fontSize: 11, fill: c.axis, fontFamily: 'IBM Plex Mono, monospace' }}
                 width={60}
-                stroke="#cbd5e0"
+                stroke={c.axisLine}
               />
             )}
             <Tooltip
               contentStyle={{
-                background: '#ffffff',
-                border: '1px solid #e2e8f0',
-                borderRadius: '0.75rem',
-                boxShadow: '0 10px 30px -10px rgba(15, 23, 42, 0.15)',
+                background: c.surface,
+                border: `1px solid ${c.border}`,
+                borderRadius: '14px',
+                boxShadow: '0 14px 38px rgba(22, 20, 15, 0.10), 0 5px 12px rgba(22, 20, 15, 0.05)',
                 fontSize: '0.8rem',
+                fontFamily: 'IBM Plex Mono, monospace',
+                color: c.strong,
               }}
+              labelStyle={{ color: c.body, fontFamily: 'Hanken Grotesk, sans-serif' }}
+              itemStyle={{ color: c.strong }}
               formatter={(value, name) => {
                 const numValue = typeof value === 'number' ? value : Number(value);
                 const strName = String(name);
@@ -214,9 +237,9 @@ export function AnalysisChart({
               type="monotone"
               dataKey="price"
               name={symbol}
-              stroke="#06b6d4"
+              stroke={c.price}
               dot={false}
-              strokeWidth={2.25}
+              strokeWidth={2}
               connectNulls
             />
             {activeMetricConfigs.map((metric) => (

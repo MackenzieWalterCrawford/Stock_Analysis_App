@@ -12,7 +12,19 @@
       "Bash(TMPFILE=\"$USERPROFILE/AppData/Local/Temp/sync_result.json\")",
       "Bash(curl:*)",
       "Bash(npm run *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "WebFetch(domain:financialmodelingprep.com)",
+      "WebSearch",
+      "WebFetch(domain:site.financialmodelingprep.com)",
+      "WebFetch(domain:data.sec.gov)",
+      "WebFetch(domain:www.sec.gov)",
+      "Read(//tmp/**)",
+      "Bash(rm -rf vantage_design)",
+      "Bash(mkdir -p vantage_design)",
+      "Bash(unzip -o \"/mnt/c/Users/wally/Downloads/Vantage Design System.zip\" -d vantage_design/)",
+      "Read(//c/Users/wally/Downloads/**)",
+      "Bash(mkdir -p \"Vantage_Design_System\")",
+      "Bash(unzip -o \"Vantage Design System.zip\" -d \"Vantage_Design_System\")"
     ]
   }
 }

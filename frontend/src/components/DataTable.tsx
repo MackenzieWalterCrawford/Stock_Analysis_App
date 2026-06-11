@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { StockPriceData } from '../types/stock';
+import { TrendingDownIcon, TrendingUpIcon } from './icons';
 import styles from './DataTable.module.css';
 
 type SortKey = 'date' | 'open' | 'high' | 'low' | 'close' | 'volume' | 'changePercent';
@@ -116,11 +117,14 @@ export function DataTable({ symbol, data, loading }: DataTableProps) {
                   <td className={styles.td}>${formatNumber(row.low)}</td>
                   <td className={styles.td}>${formatNumber(row.close)}</td>
                   <td className={styles.td}>{formatVolume(row.volume)}</td>
-                  <td
-                    className={`${styles.td} ${isPositive ? styles.positive : styles.negative}`}
-                  >
-                    {isPositive ? '+' : ''}
-                    {formatNumber(row.changePercent)}%
+                  <td className={styles.td}>
+                    <span
+                      className={`${styles.chip} ${isPositive ? styles.positive : styles.negative}`}
+                    >
+                      {isPositive ? <TrendingUpIcon size={13} /> : <TrendingDownIcon size={13} />}
+                      {isPositive ? '+' : ''}
+                      {formatNumber(row.changePercent)}%
+                    </span>
                   </td>
                 </tr>
               );
