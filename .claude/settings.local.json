@@ -11,7 +11,8 @@
       "Bash(node:*)",
       "Bash(TMPFILE=\"$USERPROFILE/AppData/Local/Temp/sync_result.json\")",
       "Bash(curl:*)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git push *)"
     ]
   }
 }
