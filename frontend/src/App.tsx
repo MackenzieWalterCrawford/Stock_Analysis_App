@@ -31,19 +31,15 @@ function App() {
       <StockSearch symbol={symbol} onSymbolChange={setSymbol} />
       <TimeframeSelector value={timeframe} onChange={setTimeframe} />
       {error && <div className="error-banner">{error}</div>}
-      {symbol && (
-        <>
-          <AnalysisChart
-            symbol={symbol}
-            priceData={priceData}
-            fundamentals={fundamentals}
-            activeMetrics={activeMetrics}
-            onToggleMetric={toggleMetric}
-            loading={loading}
-          />
-          <DataTable symbol={symbol} data={priceData} loading={loading} />
-        </>
-      )}
+      <AnalysisChart
+        symbol={symbol}
+        priceData={priceData}
+        fundamentals={fundamentals}
+        activeMetrics={activeMetrics}
+        onToggleMetric={toggleMetric}
+        loading={loading}
+      />
+      {symbol && <DataTable symbol={symbol} data={priceData} loading={loading} />}
     </Layout>
   );
 }

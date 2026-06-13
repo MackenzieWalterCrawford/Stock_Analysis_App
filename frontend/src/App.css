@@ -4,21 +4,6 @@
   box-sizing: border-box;
 }
 
-/* ------------------------------------------------------------------
-   Back-compat aliases: a few older modules still reference these
-   names. Map them onto the Vantage semantic tokens so the whole app
-   speaks one language. Prefer the Vantage tokens directly in new code.
-   ------------------------------------------------------------------ */
-:root {
-  --bg-app: var(--surface-page);
-  --bg-card: var(--surface-card);
-  --border-soft: var(--border-hairline);
-  --text-primary: var(--text-strong);
-  --text-secondary: var(--text-body);
-  --accent-strong: var(--accent-hover);
-  --shadow-card: var(--shadow-md), var(--ring-hairline);
-}
-
 /* System error — NOT a market loss, so it uses neutral ink + the
    lavender accent, never the reserved market red. */
 .error-banner {
