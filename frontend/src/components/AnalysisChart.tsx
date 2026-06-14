@@ -8,7 +8,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts';
-import type { FundamentalDataPoint, MetricKey, StockPriceData } from '../types/stock';
+import type { FundamentalDataPoint, MetricKey, StockPriceData, Timeframe } from '../types/stock';
 import { METRICS } from '../types/stock';
 import { useThemeTokens } from '../hooks/useThemeTokens';
 import { LineChartIcon } from './icons';
@@ -20,6 +20,7 @@ interface AnalysisChartProps {
   fundamentals: FundamentalDataPoint[];
   activeMetrics: Set<MetricKey>;
   onToggleMetric: (key: MetricKey) => void;
+  timeframe: Timeframe;
   loading: boolean;
 }
 
@@ -33,6 +34,9 @@ interface MergedRow {
   revenueGrowthYoy: number | null;
   roe: number | null;
   debtToEquity: number | null;
+  evEbitda: number | null;
+  peg: number | null;
+  roic: number | null;
 }
 
 function mergeData(
@@ -54,16 +58,54 @@ function mergeData(
         }
       }
 
+      // Compute market cap from live price × current-quarter diluted share count
+      const shares = fund?.dilutedShares ?? null;
+      const marketCap = shares != null && shares > 0 ? p.close * shares : null;
+
+      // P/FCF: live marketCap / TTM FCF; fall back to stored ratio if marketCap unavailable
+      const priceToFcf =
+        marketCap != null && fund?.fcf != null && fund.fcf > 0
+          ? marketCap / fund.fcf
+          : fund?.priceToFcf ?? null;
+
+      // EV/EBITDA: (marketCap + totalDebt - cashAndEquivalents) / TTM EBITDA
+      let evEbitda: number | null = null;
+      if (
+        marketCap != null &&
+        fund?.ebitdaTtm != null &&
+        fund.ebitdaTtm > 0 &&
+        fund.totalDebt != null &&
+        fund.cashAndEquivalents != null
+      ) {
+        evEbitda = (marketCap + fund.totalDebt - fund.cashAndEquivalents) / fund.ebitdaTtm;
+      }
+
+      // PEG: P/E divided by EPS growth rate (%). Growth ≤ 0 → null (meaningless)
+      const pe =
+        fund?.ttmEps != null && fund.ttmEps > 0 ? p.close / fund.ttmEps : null;
+      const g =
+        fund?.epsGrowthYoy != null ? fund.epsGrowthYoy * 100 : null; // fraction → percent
+      const peg = pe != null && g != null && g > 0 ? pe / g : null;
+
+      // ROIC: single multiply from decimal fraction to percent (0.18 → 18.0)
+      const roic = fund?.roic != null ? fund.roic * 100 : null;
+
       return {
         date: dateKey,
         price: p.close,
-        peRatio: fund?.peRatio ?? null,
-        priceToFcf: fund?.priceToFcf ?? null,
+        peRatio:
+          fund?.ttmEps != null && fund.ttmEps > 0
+            ? p.close / fund.ttmEps
+            : fund?.peRatio ?? null,
+        priceToFcf,
         fcf: fund?.fcf != null ? fund.fcf / 1e9 : null,
         eps: fund?.eps ?? null,
         revenueGrowthYoy: fund?.revenueGrowthYoy ?? null,
         roe: fund?.roe != null ? fund.roe * 100 : null,
         debtToEquity: fund?.debtToEquity ?? null,
+        evEbitda,
+        peg,
+        roic,
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -72,6 +114,47 @@ function mergeData(
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+}
+
+/**
+ * Selects which x-axis dates get a tick, thinning them out on the longer
+ * timeframes so the labels have room to breathe. Returns `undefined` for the
+ * short views (`1W`/`1M`), which keep Recharts' default even spacing.
+ * Picks are always real values from `data` so the categorical axis lines up.
+ */
+function computeXTicks(data: MergedRow[], timeframe: Timeframe): string[] | undefined {
+  if (timeframe === '1W' || timeframe === '1M') return undefined;
+
+  if (timeframe === '5Y') {
+    // One tick per year — the first trading day seen in each calendar year.
+    const ticks: string[] = [];
+    let lastYear = '';
+    for (const row of data) {
+      const year = row.date.slice(0, 4);
+      if (year !== lastYear) {
+        ticks.push(row.date);
+        lastYear = year;
+      }
+    }
+    return ticks;
+  }
+
+  // YTD / 1Y — first trading day of each month, then keep every other one.
+  const monthFirsts: string[] = [];
+  let lastMonth = '';
+  for (const row of data) {
+    const month = row.date.slice(0, 7);
+    if (month !== lastMonth) {
+      monthFirsts.push(row.date);
+      lastMonth = month;
+    }
+  }
+  return monthFirsts.filter((_, i) => i % 2 === 0);
+}
+
+function formatXTick(dateStr: string, timeframe: Timeframe): string {
+  if (timeframe === '5Y') return dateStr.slice(0, 4);
+  return formatDate(dateStr);
 }
 
 function formatPrice(v: number): string {
@@ -84,11 +167,12 @@ export function AnalysisChart({
   fundamentals,
   activeMetrics,
   onToggleMetric,
+  timeframe,
   loading,
 }: AnalysisChartProps) {
   const c = useThemeTokens({
     grid: '--border-hairline',
-    axis: '--text-muted',
+    axis: '--text-body',
     axisLine: '--border-strong',
     price: '--text-strong',
     surface: '--surface-card',
@@ -128,6 +212,7 @@ export function AnalysisChart({
   }
 
   const chartData = mergeData(priceData, fundamentals);
+  const xTicks = computeXTicks(chartData, timeframe);
   const activeMetricConfigs = METRICS.filter((m) => activeMetrics.has(m.key));
   const showRightAxis = activeMetricConfigs.length > 0;
 
@@ -178,9 +263,11 @@ export function AnalysisChart({
             <CartesianGrid strokeDasharray="3 3" stroke={c.grid} vertical={false} />
             <XAxis
               dataKey="date"
-              tickFormatter={formatDate}
+              tickFormatter={(v: string) => formatXTick(v, timeframe)}
               tick={{ fontSize: 11, fill: c.axis, fontFamily: 'IBM Plex Mono, monospace' }}
-              tickCount={8}
+              ticks={xTicks}
+              tickCount={xTicks ? undefined : 8}
+              interval={xTicks ? 0 : 'preserveEnd'}
               stroke={c.axisLine}
             />
             <YAxis

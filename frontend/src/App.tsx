@@ -37,6 +37,7 @@ function App() {
         fundamentals={fundamentals}
         activeMetrics={activeMetrics}
         onToggleMetric={toggleMetric}
+        timeframe={timeframe}
         loading={loading}
       />
       {symbol && <DataTable symbol={symbol} data={priceData} loading={loading} />}

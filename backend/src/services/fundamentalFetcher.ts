@@ -22,9 +22,52 @@ interface FMPIncomeStatement {
   symbol: string;
   revenue: number | null;
   eps: number | null;
-  epsDiluted: number | null;
+  // FMP returns this field as all-lowercase; "epsDiluted" silently reads undefined
+  epsdiluted: number | null;
+  operatingIncome: number | null;
+  depreciationAndAmortization: number | null;
+  ebitda: number | null;
+  incomeTaxExpense: number | null;
+  incomeBeforeTax: number | null;
+  netIncome: number | null;
+  weightedAverageShsOutDil: number | null;
   period: string | null;
   cik?: string;
+}
+
+interface FMPCashFlowStatement {
+  date: string;
+  symbol: string;
+  operatingCashFlow: number | null;
+  // FMP returns capitalExpenditure as a negative number
+  capitalExpenditure: number | null;
+  freeCashFlow: number | null;
+}
+
+interface FMPBalanceSheet {
+  date: string;
+  symbol: string;
+  totalDebt: number | null;
+  totalStockholdersEquity: number | null;
+  cashAndCashEquivalents: number | null;
+}
+
+// Per-quarter raw values assembled from all three statement types; used
+// as a parallel array to FundamentalRecord[] for the TTM rolling windows.
+interface QuarterlyRaw {
+  revenue: number | null;
+  eps: number | null;
+  epsdiluted: number | null;
+  operatingIncome: number | null;
+  depreciationAndAmortization: number | null;
+  ebitda: number | null;
+  incomeTaxExpense: number | null;
+  incomeBeforeTax: number | null;
+  freeCashFlow: number | null;
+  totalDebt: number | null;
+  totalStockholdersEquity: number | null;
+  cashAndCashEquivalents: number | null;
+  weightedAverageShsOutDil: number | null;
 }
 
 export interface FundamentalRecord {
@@ -32,12 +75,18 @@ export interface FundamentalRecord {
   date: Date;
   peRatio: number | null;
   priceToFcf: number | null;
-  fcf: bigint | null;
+  fcf: bigint | null;           // TTM free cash flow
   eps: number | null;
   revenue: bigint | null;
   revenueGrowthYoy: number | null;
   roe: number | null;
   debtToEquity: number | null;
+  ebitdaTtm: bigint | null;
+  dilutedShares: bigint | null;
+  totalDebt: bigint | null;
+  cashAndEquivalents: bigint | null;
+  epsGrowthYoy: number | null;  // decimal fraction e.g. 0.15 = 15%
+  roic: number | null;          // decimal fraction e.g. 0.18 = 18%
   period: string | null;
 }
 
@@ -100,12 +149,20 @@ export class FundamentalFetcher {
     };
 
     try {
-      const [keyMetrics, incomeData] = await Promise.all([
+      const [keyMetrics, incomeData, cashFlowData, balanceSheetData] = await Promise.all([
         this.fetchKeyMetrics(normalizedSymbol),
         this.fetchIncomeStatement(normalizedSymbol),
+        this.fetchCashFlowStatement(normalizedSymbol),
+        this.fetchBalanceSheet(normalizedSymbol),
       ]);
 
-      const merged = this.mergeFundamentals(normalizedSymbol, keyMetrics, incomeData);
+      const { records: merged, rawQuarters } = this.mergeFundamentals(
+        normalizedSymbol,
+        keyMetrics,
+        incomeData,
+        cashFlowData,
+        balanceSheetData
+      );
 
       const cik = incomeData.find((d) => d.cik)?.cik ?? null;
       if (cik !== null) {
@@ -128,12 +185,42 @@ export class FundamentalFetcher {
                 revenueGrowthYoy: null,
                 roe: null,
                 debtToEquity: null,
+                ebitdaTtm: null,
+                dilutedShares: null,
+                totalDebt: null,
+                cashAndEquivalents: null,
+                epsGrowthYoy: null,
+                roic: null,
                 period: sec.period,
+              });
+              // Push a blank raw entry so indexes remain aligned after re-sort
+              rawQuarters.push({
+                revenue: null,
+                eps: sec.eps,
+                epsdiluted: null,
+                operatingIncome: null,
+                depreciationAndAmortization: null,
+                ebitda: null,
+                incomeTaxExpense: null,
+                incomeBeforeTax: null,
+                freeCashFlow: null,
+                totalDebt: null,
+                totalStockholdersEquity: null,
+                cashAndCashEquivalents: null,
+                weightedAverageShsOutDil: null,
               });
               existingDates.add(dateKey);
             }
           }
-          merged.sort((a, b) => a.date.getTime() - b.date.getTime());
+          // Re-sort both arrays together by date
+          const combined = merged.map((r, i) => ({ record: r, raw: rawQuarters[i] }));
+          combined.sort((a, b) => a.record.date.getTime() - b.record.date.getTime());
+          merged.length = 0;
+          rawQuarters.length = 0;
+          for (const { record, raw } of combined) {
+            merged.push(record);
+            rawQuarters.push(raw);
+          }
         } catch (secError) {
           console.error(
             `[FundamentalFetcher] SEC EDGAR fetch failed for ${normalizedSymbol}:`,
@@ -142,8 +229,9 @@ export class FundamentalFetcher {
         }
       }
 
-      const withGrowth = this.calculateRevenueGrowthYoy(merged);
-      const withPe = await this.calculatePeFromPrices(normalizedSymbol, withGrowth);
+      const withGrowth = this.calculateRevenueGrowthYoy(merged, rawQuarters);
+      const withTtm = this.computeTtmAndRatios(withGrowth, rawQuarters);
+      const withPe = await this.calculatePeFromPrices(normalizedSymbol, withTtm);
 
       result.recordsFetched = withPe.length;
 
@@ -219,7 +307,7 @@ export class FundamentalFetcher {
     }
 
     const url =
-      `${this.baseUrl}/income-statement?symbol=${symbol}&period=quarter&limit=5&apikey=${this.apiKey}`;
+      `${this.baseUrl}/income-statement?symbol=${symbol}&period=quarter&limit=24&apikey=${this.apiKey}`;
 
     console.log(`[FundamentalFetcher] Fetching income statement for ${symbol}`);
 
@@ -258,6 +346,96 @@ export class FundamentalFetcher {
     }
   }
 
+  private async fetchCashFlowStatement(symbol: string): Promise<FMPCashFlowStatement[]> {
+    if (!this.apiKey) {
+      throw new FundamentalFetcherError('FMP API key not configured', 'NO_API_KEY');
+    }
+
+    const url =
+      `${this.baseUrl}/cash-flow-statement?symbol=${symbol}&period=quarter&limit=24&apikey=${this.apiKey}`;
+
+    console.log(`[FundamentalFetcher] Fetching cash flow statement for ${symbol}`);
+
+    try {
+      const response = await axios.get<FMPCashFlowStatement[]>(url, {
+        timeout: 30000,
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!response.data || !Array.isArray(response.data)) {
+        console.warn(`[FundamentalFetcher] No cash flow data for ${symbol}`);
+        return [];
+      }
+
+      console.log(
+        `[FundamentalFetcher] Got ${response.data.length} cash flow records for ${symbol}`
+      );
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        if (axiosError.response?.status === 402 || axiosError.response?.status === 403) {
+          console.warn(
+            `[FundamentalFetcher] Cash flow endpoint requires paid FMP plan (HTTP ${axiosError.response.status})`
+          );
+          return [];
+        }
+        if (axiosError.response?.status === 429) {
+          throw new FundamentalFetcherError('API rate limit exceeded', 'RATE_LIMIT', 429);
+        }
+      }
+      throw new FundamentalFetcherError(
+        `Failed to fetch cash flow statement: ${error instanceof Error ? error.message : String(error)}`,
+        'API_ERROR'
+      );
+    }
+  }
+
+  private async fetchBalanceSheet(symbol: string): Promise<FMPBalanceSheet[]> {
+    if (!this.apiKey) {
+      throw new FundamentalFetcherError('FMP API key not configured', 'NO_API_KEY');
+    }
+
+    const url =
+      `${this.baseUrl}/balance-sheet-statement?symbol=${symbol}&period=quarter&limit=24&apikey=${this.apiKey}`;
+
+    console.log(`[FundamentalFetcher] Fetching balance sheet for ${symbol}`);
+
+    try {
+      const response = await axios.get<FMPBalanceSheet[]>(url, {
+        timeout: 30000,
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!response.data || !Array.isArray(response.data)) {
+        console.warn(`[FundamentalFetcher] No balance sheet data for ${symbol}`);
+        return [];
+      }
+
+      console.log(
+        `[FundamentalFetcher] Got ${response.data.length} balance sheet records for ${symbol}`
+      );
+      return response.data;
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        if (axiosError.response?.status === 402 || axiosError.response?.status === 403) {
+          console.warn(
+            `[FundamentalFetcher] Balance sheet endpoint requires paid FMP plan (HTTP ${axiosError.response.status})`
+          );
+          return [];
+        }
+        if (axiosError.response?.status === 429) {
+          throw new FundamentalFetcherError('API rate limit exceeded', 'RATE_LIMIT', 429);
+        }
+      }
+      throw new FundamentalFetcherError(
+        `Failed to fetch balance sheet: ${error instanceof Error ? error.message : String(error)}`,
+        'API_ERROR'
+      );
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Private: Data Processing
   // --------------------------------------------------------------------------
@@ -265,90 +443,235 @@ export class FundamentalFetcher {
   private mergeFundamentals(
     symbol: string,
     keyMetrics: FMPKeyMetric[],
-    incomeData: FMPIncomeStatement[]
-  ): FundamentalRecord[] {
-    // Build income map keyed by date string
+    incomeData: FMPIncomeStatement[],
+    cashFlowData: FMPCashFlowStatement[],
+    balanceSheetData: FMPBalanceSheet[]
+  ): { records: FundamentalRecord[]; rawQuarters: QuarterlyRaw[] } {
+    // Build lookup maps keyed by date string for cross-statement join
     const incomeMap = new Map<string, FMPIncomeStatement>();
     for (const item of incomeData) {
-      if (item.date) {
-        incomeMap.set(item.date, item);
-      }
+      if (item.date) incomeMap.set(item.date, item);
+    }
+    const cashFlowMap = new Map<string, FMPCashFlowStatement>();
+    for (const item of cashFlowData) {
+      if (item.date) cashFlowMap.set(item.date, item);
+    }
+    const balanceMap = new Map<string, FMPBalanceSheet>();
+    for (const item of balanceSheetData) {
+      if (item.date) balanceMap.set(item.date, item);
+    }
+
+    // Collect all distinct dates across income, cashflow, and balance sheets
+    const allDates = new Set<string>([
+      ...incomeMap.keys(),
+      ...cashFlowMap.keys(),
+      ...balanceMap.keys(),
+    ]);
+
+    // key-metrics is paid-tier only (used for ROE); may be empty
+    const kmMap = new Map<string, FMPKeyMetric>();
+    for (const km of keyMetrics) {
+      if (km.date) kmMap.set(km.date, km);
     }
 
     const records: FundamentalRecord[] = [];
+    const rawQuarters: QuarterlyRaw[] = [];
 
-    // Use key metrics as the primary source; join income data by date
-    for (const km of keyMetrics) {
-      if (!km.date) continue;
-
+    for (const dateStr of allDates) {
       let parsedDate: Date;
       try {
-        parsedDate = parseISO(km.date);
+        parsedDate = parseISO(dateStr);
         if (isNaN(parsedDate.getTime())) continue;
       } catch {
         continue;
       }
 
-      const income = incomeMap.get(km.date);
+      const income = incomeMap.get(dateStr);
+      const cashFlow = cashFlowMap.get(dateStr);
+      const balance = balanceMap.get(dateStr);
+      const km = kmMap.get(dateStr);
 
       const revenue =
-        income?.revenue != null
-          ? BigInt(Math.round(income.revenue))
-          : null;
+        income?.revenue != null ? BigInt(Math.round(income.revenue)) : null;
 
-      const fcf =
-        km.freeCashFlow != null
-          ? BigInt(Math.round(km.freeCashFlow))
-          : null;
-
-      const eps = income?.epsDiluted ?? income?.eps ?? null;
+      const eps = income?.epsdiluted ?? income?.eps ?? null;
 
       records.push({
         symbol,
         date: parsedDate,
-        peRatio: km.peRatio ?? null,
-        priceToFcf: km.priceToFreeCashFlowRatio ?? null,
-        fcf,
+        peRatio: km?.peRatio ?? null,
+        // priceToFcf and marketCap not stored; computed live on the frontend
+        priceToFcf: null,
+        // fcf starts as per-quarter value; overwritten with TTM in computeTtmAndRatios
+        fcf:
+          cashFlow?.freeCashFlow != null
+            ? BigInt(Math.round(cashFlow.freeCashFlow))
+            : null,
         eps,
         revenue,
         revenueGrowthYoy: null, // filled in calculateRevenueGrowthYoy
-        roe: km.returnOnEquity ?? null,
-        debtToEquity: km.debtToEquity ?? null,
+        roe: km?.returnOnEquity ?? null,
+        debtToEquity: null,     // overridden from balance sheet in computeTtmAndRatios
+        ebitdaTtm: null,        // filled in computeTtmAndRatios
+        dilutedShares: null,    // filled in computeTtmAndRatios
+        totalDebt: null,        // filled in computeTtmAndRatios
+        cashAndEquivalents: null, // filled in computeTtmAndRatios
+        epsGrowthYoy: null,     // filled in computeTtmAndRatios
+        roic: null,             // filled in computeTtmAndRatios
         period: income?.period ?? null,
+      });
+
+      rawQuarters.push({
+        revenue: income?.revenue ?? null,
+        eps: income?.eps ?? null,
+        epsdiluted: income?.epsdiluted ?? null,
+        operatingIncome: income?.operatingIncome ?? null,
+        depreciationAndAmortization: income?.depreciationAndAmortization ?? null,
+        ebitda: income?.ebitda ?? null,
+        incomeTaxExpense: income?.incomeTaxExpense ?? null,
+        incomeBeforeTax: income?.incomeBeforeTax ?? null,
+        // Use FMP's provided freeCashFlow (= OCF + capex, capex is already negative)
+        freeCashFlow: cashFlow?.freeCashFlow ?? null,
+        totalDebt: balance?.totalDebt ?? null,
+        totalStockholdersEquity: balance?.totalStockholdersEquity ?? null,
+        cashAndCashEquivalents: balance?.cashAndCashEquivalents ?? null,
+        weightedAverageShsOutDil: income?.weightedAverageShsOutDil ?? null,
       });
     }
 
-    // If we only have income data (no key metrics), include those records too
-    if (keyMetrics.length === 0 && incomeData.length > 0) {
-      for (const inc of incomeData) {
-        if (!inc.date) continue;
-        let parsedDate: Date;
-        try {
-          parsedDate = parseISO(inc.date);
-          if (isNaN(parsedDate.getTime())) continue;
-        } catch {
-          continue;
+    // Sort ascending by date so rolling windows compute in order
+    const combined = records.map((r, i) => ({ record: r, raw: rawQuarters[i] }));
+    combined.sort((a, b) => a.record.date.getTime() - b.record.date.getTime());
+    const sortedRecords = combined.map((c) => c.record);
+    const sortedRaw = combined.map((c) => c.raw);
+
+    return { records: sortedRecords, rawQuarters: sortedRaw };
+  }
+
+  private computeTtmAndRatios(
+    records: FundamentalRecord[],
+    rawQuarters: QuarterlyRaw[]
+  ): FundamentalRecord[] {
+    return records.map((record, index) => {
+      // Require a full 4-quarter window
+      if (index < 3) return record;
+
+      const win = rawQuarters.slice(index - 3, index + 1);
+      const curRaw = rawQuarters[index];
+
+      const allPresent = (fn: (r: QuarterlyRaw) => number | null): boolean =>
+        win.every((r) => fn(r) !== null);
+
+      // TTM FCF: sum FMP's per-quarter freeCashFlow (= OCF + capex; capex is negative).
+      // Quarterly freeCashFlow from FMP is the period value, so summing 4 quarters gives TTM.
+      const allHaveFcf = allPresent((r) => r.freeCashFlow);
+      const ttmFcf: bigint | null = allHaveFcf
+        ? BigInt(Math.round(win.reduce((s, r) => s + r.freeCashFlow!, 0)))
+        : null;
+
+      // TTM EBITDA: prefer the ebitda field; fall back to operatingIncome + D&A per quarter
+      const ebitdaPerQuarter = win.map((r) => {
+        if (r.ebitda !== null) return r.ebitda;
+        if (r.operatingIncome !== null && r.depreciationAndAmortization !== null) {
+          return r.operatingIncome + r.depreciationAndAmortization;
         }
-        records.push({
-          symbol,
-          date: parsedDate,
-          peRatio: null,
-          priceToFcf: null,
-          fcf: null,
-          eps: inc.epsDiluted ?? inc.eps ?? null,
-          revenue: inc.revenue != null ? BigInt(Math.round(inc.revenue)) : null,
-          revenueGrowthYoy: null,
-          roe: null,
-          debtToEquity: null,
-          period: inc.period ?? null,
-        });
+        return null;
+      });
+      const allHaveEbitda = ebitdaPerQuarter.every((v) => v !== null);
+      const ebitdaTtm: bigint | null = allHaveEbitda
+        ? BigInt(Math.round(ebitdaPerQuarter.reduce((s, v) => s + v!, 0)))
+        : null;
+
+      // dilutedShares: point-in-time from current quarter
+      const dilutedShares: bigint | null =
+        curRaw.weightedAverageShsOutDil != null
+          ? BigInt(Math.round(curRaw.weightedAverageShsOutDil))
+          : null;
+
+      // Balance sheet point-in-time values
+      const totalDebt: bigint | null =
+        curRaw.totalDebt != null ? BigInt(Math.round(curRaw.totalDebt)) : null;
+      const cashAndEquivalents: bigint | null =
+        curRaw.cashAndCashEquivalents != null
+          ? BigInt(Math.round(curRaw.cashAndCashEquivalents))
+          : null;
+
+      // Debt-to-equity: balance sheet based override
+      let debtToEquity: number | null = null;
+      if (
+        curRaw.totalDebt != null &&
+        curRaw.totalStockholdersEquity != null &&
+        curRaw.totalStockholdersEquity > 0
+      ) {
+        debtToEquity = curRaw.totalDebt / curRaw.totalStockholdersEquity;
       }
-    }
 
-    // Sort ascending by date for growth calculation
-    records.sort((a, b) => a.date.getTime() - b.date.getTime());
+      // ROIC = NOPAT / InvestedCapital
+      // InvestedCapital = totalDebt + totalStockholdersEquity - cashAndCashEquivalents
+      // (deployed capital net of idle cash — a standard definition)
+      let roic: number | null = null;
+      const allHaveOpIncome = allPresent((r) => r.operatingIncome);
+      if (
+        allHaveOpIncome &&
+        curRaw.totalStockholdersEquity != null &&
+        totalDebt !== null &&
+        cashAndEquivalents !== null
+      ) {
+        const ttmOperatingIncome = win.reduce((s, r) => s + r.operatingIncome!, 0);
 
-    return records;
+        // Effective tax rate from TTM; clamp to [0, 0.5] to avoid distortions
+        let effectiveTaxRate = 0.21; // statutory fallback
+        const allHaveTax = allPresent((r) => r.incomeTaxExpense);
+        const allHavePreTax = allPresent((r) => r.incomeBeforeTax);
+        if (allHaveTax && allHavePreTax) {
+          const ttmPreTax = win.reduce((s, r) => s + r.incomeBeforeTax!, 0);
+          if (ttmPreTax > 0) {
+            const rawRate = win.reduce((s, r) => s + r.incomeTaxExpense!, 0) / ttmPreTax;
+            effectiveTaxRate = Math.max(0, Math.min(0.5, rawRate));
+          }
+        }
+
+        const nopat = ttmOperatingIncome * (1 - effectiveTaxRate);
+        const investedCapital =
+          Number(totalDebt) +
+          curRaw.totalStockholdersEquity -
+          Number(cashAndEquivalents);
+
+        if (investedCapital > 0) {
+          roic = nopat / investedCapital;
+        }
+      }
+
+      // EPS growth YoY (TTM vs prior TTM); requires 8 quarters
+      let epsGrowthYoy: number | null = null;
+      if (index >= 7) {
+        const priorWin = rawQuarters.slice(index - 7, index - 3);
+        const currentEpsWin = win.map((r) => r.epsdiluted ?? r.eps);
+        const priorEpsWin = priorWin.map((r) => r.epsdiluted ?? r.eps);
+        const allCurrentEps = currentEpsWin.every((v) => v !== null);
+        const allPriorEps = priorEpsWin.every((v) => v !== null);
+        if (allCurrentEps && allPriorEps) {
+          const ttmEps = currentEpsWin.reduce((s, v) => s + v!, 0);
+          const priorTtmEps = priorEpsWin.reduce((s, v) => s + v!, 0);
+          // PEG is meaningless with a non-positive EPS base
+          if (priorTtmEps > 0) {
+            epsGrowthYoy = (ttmEps - priorTtmEps) / Math.abs(priorTtmEps);
+          }
+        }
+      }
+
+      return {
+        ...record,
+        fcf: ttmFcf,
+        ebitdaTtm,
+        dilutedShares,
+        totalDebt,
+        cashAndEquivalents,
+        roic,
+        debtToEquity,
+        epsGrowthYoy,
+      };
+    });
   }
 
   private async calculatePeFromPrices(
@@ -412,27 +735,29 @@ export class FundamentalFetcher {
     });
   }
 
-  private calculateRevenueGrowthYoy(records: FundamentalRecord[]): FundamentalRecord[] {
+  private calculateRevenueGrowthYoy(
+    records: FundamentalRecord[],
+    rawQuarters: QuarterlyRaw[]
+  ): FundamentalRecord[] {
+    // TTM-based: compare TTM revenue[index-3..index] vs prior TTM[index-7..index-4].
+    // Requires 8 quarters; growthYoy stored as percent.
     return records.map((record, index) => {
-      // Find the same quarter 4 entries ago (1 year back)
-      const priorIndex = index - 4;
-      if (priorIndex < 0) {
-        return record;
-      }
+      if (index < 7) return record;
 
-      const prior = records[priorIndex];
-      if (
-        prior.revenue == null ||
-        record.revenue == null ||
-        prior.revenue === 0n
-      ) {
-        return record;
-      }
+      const currentWin = rawQuarters.slice(index - 3, index + 1);
+      const priorWin = rawQuarters.slice(index - 7, index - 3);
 
-      const current = Number(record.revenue);
-      const previous = Number(prior.revenue);
-      const growth = ((current - previous) / Math.abs(previous)) * 100;
+      const allCurrentRev = currentWin.every((r) => r.revenue !== null);
+      const allPriorRev = priorWin.every((r) => r.revenue !== null);
 
+      if (!allCurrentRev || !allPriorRev) return record;
+
+      const ttmRev = currentWin.reduce((s, r) => s + r.revenue!, 0);
+      const priorTtmRev = priorWin.reduce((s, r) => s + r.revenue!, 0);
+
+      if (priorTtmRev === 0) return record;
+
+      const growth = ((ttmRev - priorTtmRev) / Math.abs(priorTtmRev)) * 100;
       return { ...record, revenueGrowthYoy: growth };
     });
   }
@@ -448,40 +773,39 @@ export class FundamentalFetcher {
 
       try {
         await this.prisma.$transaction(
-          batch.map((record) =>
-            this.prisma.financialRatio.upsert({
+          batch.map((record) => {
+            // The stale Prisma generated client predates the add_ratio_ttm_components
+            // migration. We cast the data payloads so TypeScript accepts the new columns;
+            // the runtime upsert will succeed once the migration has been applied.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const sharedData: any = {
+              peRatio: record.peRatio,
+              priceToFcf: null,
+              fcf: record.fcf,
+              eps: record.eps,
+              revenue: record.revenue,
+              revenueGrowthYoy: record.revenueGrowthYoy,
+              roe: record.roe,
+              debtToEquity: record.debtToEquity,
+              ebitdaTtm: record.ebitdaTtm,
+              dilutedShares: record.dilutedShares,
+              totalDebt: record.totalDebt,
+              cashAndEquivalents: record.cashAndEquivalents,
+              epsGrowthYoy: record.epsGrowthYoy,
+              roic: record.roic,
+              period: record.period,
+            };
+            return this.prisma.financialRatio.upsert({
               where: {
                 symbol_date: {
                   symbol: record.symbol,
                   date: record.date,
                 },
               },
-              update: {
-                peRatio: record.peRatio,
-                priceToFcf: record.priceToFcf,
-                fcf: record.fcf,
-                eps: record.eps,
-                revenue: record.revenue,
-                revenueGrowthYoy: record.revenueGrowthYoy,
-                roe: record.roe,
-                debtToEquity: record.debtToEquity,
-                period: record.period,
-              },
-              create: {
-                symbol: record.symbol,
-                date: record.date,
-                peRatio: record.peRatio,
-                priceToFcf: record.priceToFcf,
-                fcf: record.fcf,
-                eps: record.eps,
-                revenue: record.revenue,
-                revenueGrowthYoy: record.revenueGrowthYoy,
-                roe: record.roe,
-                debtToEquity: record.debtToEquity,
-                period: record.period,
-              },
-            })
-          )
+              update: sharedData,
+              create: { symbol: record.symbol, date: record.date, ...sharedData },
+            });
+          })
         );
 
         savedCount += batch.length;

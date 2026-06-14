@@ -1,4 +1,4 @@
-import { PrismaClient } from '../generated/prisma';
+import { PrismaClient, Prisma } from '../generated/prisma';
 import { startOfYear, subDays, subMonths, subYears } from 'date-fns';
 import { CacheService } from './cache';
 import { FundamentalFetcher } from './fundamentalFetcher';
@@ -7,15 +7,50 @@ import { FundamentalFetcher } from './fundamentalFetcher';
 // Types
 // ============================================================================
 
+// Extends the stale Prisma-generated row type with columns added by the
+// add_ratio_ttm_components migration. The generated client will be regenerated
+// once the DB is available; until then this interface bridges the gap.
+interface FinancialRatioRow {
+  id: number;
+  symbol: string;
+  date: Date;
+  peRatio: Prisma.Decimal | null;
+  priceToFcf: Prisma.Decimal | null;
+  priceToOcf: Prisma.Decimal | null;
+  marketCap: bigint | null;
+  fcf: bigint | null;
+  eps: Prisma.Decimal | null;
+  revenue: bigint | null;
+  revenueGrowthYoy: Prisma.Decimal | null;
+  roe: Prisma.Decimal | null;
+  debtToEquity: Prisma.Decimal | null;
+  ebitdaTtm: bigint | null;
+  dilutedShares: bigint | null;
+  totalDebt: bigint | null;
+  cashAndEquivalents: bigint | null;
+  epsGrowthYoy: Prisma.Decimal | null;
+  roic: Prisma.Decimal | null;
+  period: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface FundamentalDataPoint {
   date: string; // ISO date string "YYYY-MM-DD"
   peRatio: number | null;
   priceToFcf: number | null;
-  fcf: number | null;       // raw value in dollars (BigInt serialized to number)
+  fcf: number | null;       // TTM free cash flow in dollars (BigInt serialized to number)
   eps: number | null;
+  ttmEps: number | null;    // trailing-twelve-month EPS; used by frontend to compute live P/E
   revenueGrowthYoy: number | null; // percentage
   roe: number | null;       // decimal e.g. 0.28 → returned as-is, frontend multiplies if needed
   debtToEquity: number | null;
+  ebitdaTtm: number | null;        // TTM EBITDA in dollars
+  dilutedShares: number | null;    // current quarter diluted share count
+  totalDebt: number | null;        // current quarter total debt in dollars
+  cashAndEquivalents: number | null; // current quarter cash and equivalents in dollars
+  epsGrowthYoy: number | null;     // decimal fraction e.g. 0.15 = 15%
+  roic: number | null;             // decimal fraction e.g. 0.18 = 18%
 }
 
 type Timeframe = '5Y' | '1Y' | 'YTD' | '1M' | '1W';
@@ -35,7 +70,9 @@ export class FundamentalService {
 
   async getFundamentals(symbol: string, timeframe: string): Promise<FundamentalDataPoint[]> {
     const normalizedSymbol = symbol.toUpperCase().trim();
-    const cacheKey = `fundamental:history:${normalizedSymbol}:${timeframe}`;
+    // v3: payload now includes ebitdaTtm, dilutedShares, totalDebt, cashAndEquivalents,
+    // epsGrowthYoy, and roic; bumping retires v2 entries that lack these fields.
+    const cacheKey = `fundamental:history:v3:${normalizedSymbol}:${timeframe}`;
 
     // Layer 1: Cache (skip if all peRatios are null — prices may not have been ready yet)
     try {
@@ -48,9 +85,10 @@ export class FundamentalService {
       console.warn('[FundamentalService] Cache read failed:', this.getErrorMessage(error));
     }
 
-    // Layer 2: Database
+    // Layer 2: Database — fetch all rows for the symbol so TTM EPS can be
+    // computed using the full history even when the display window is short.
     const { from, to } = this.calculateDateRange(timeframe);
-    let dbRecords = await this.queryDatabase(normalizedSymbol, from, to);
+    let dbRecords = await this.queryDatabase(normalizedSymbol);
 
     // Layer 3: Fetch from API if empty or if all existing records have null peRatio
     // (handles stale DB rows written before the v3 endpoint fix)
@@ -66,7 +104,7 @@ export class FundamentalService {
           );
         }
         // Re-query (may still be empty if API returned nothing due to plan tier)
-        dbRecords = await this.queryDatabase(normalizedSymbol, from, to);
+        dbRecords = await this.queryDatabase(normalizedSymbol);
       } catch (error) {
         console.error(
           `[FundamentalService] Sync failed for ${normalizedSymbol}:`,
@@ -75,7 +113,7 @@ export class FundamentalService {
       }
     }
 
-    const result = this.convertToDataPoints(dbRecords);
+    const result = this.convertToDataPoints(dbRecords, from, to);
 
     // Cache result; use short TTL if P/E is still missing so we retry once prices are loaded
     if (result.length > 0) {
@@ -96,13 +134,13 @@ export class FundamentalService {
 
     // Invalidate all cached timeframes
     try {
-      const pattern = `fundamental:history:${normalizedSymbol}:*`;
+      const pattern = `fundamental:history:v3:${normalizedSymbol}:*`;
       // Use generic keys scan — CacheService exposes the client via the invalidateStock pattern
       // We'll just delete the known timeframes
       const timeframes: Timeframe[] = ['5Y', '1Y', 'YTD', '1M', '1W'];
       await Promise.all(
         timeframes.map((tf) =>
-          this.cacheService.delete(`fundamental:history:${normalizedSymbol}:${tf}`)
+          this.cacheService.delete(`fundamental:history:v3:${normalizedSymbol}:${tf}`)
         )
       );
       void pattern; // suppress lint warning
@@ -117,33 +155,68 @@ export class FundamentalService {
   // Private Helpers
   // --------------------------------------------------------------------------
 
-  private async queryDatabase(
-    symbol: string,
-    from: Date,
-    to: Date
-  ) {
-    return this.prisma.financialRatio.findMany({
-      where: {
-        symbol,
-        date: { gte: from, lte: to },
-      },
+  private async queryDatabase(symbol: string): Promise<FinancialRatioRow[]> {
+    // Cast to FinancialRatioRow: the Prisma generated client predates the schema
+    // migration that added ebitdaTtm, dilutedShares, totalDebt, cashAndEquivalents,
+    // epsGrowthYoy, roic. The runtime columns exist; only the stale type lacks them.
+    const rows = await this.prisma.financialRatio.findMany({
+      where: { symbol },
       orderBy: { date: 'asc' },
     });
+    return rows as unknown as FinancialRatioRow[];
   }
 
   private convertToDataPoints(
-    records: Awaited<ReturnType<typeof this.queryDatabase>>
+    records: FinancialRatioRow[],
+    from: Date,
+    to: Date
   ): FundamentalDataPoint[] {
-    return records.map((r) => ({
-      date: r.date.toISOString().split('T')[0],
-      peRatio: r.peRatio != null ? Number(r.peRatio) : null,
-      priceToFcf: r.priceToFcf != null ? Number(r.priceToFcf) : null,
-      fcf: r.fcf != null ? Number(r.fcf) : null,
-      eps: r.eps != null ? Number(r.eps) : null,
-      revenueGrowthYoy: r.revenueGrowthYoy != null ? Number(r.revenueGrowthYoy) : null,
-      roe: r.roe != null ? Number(r.roe) : null,
-      debtToEquity: r.debtToEquity != null ? Number(r.debtToEquity) : null,
-    }));
+    // Compute TTM EPS over the full history (records are sorted asc), then
+    // filter output to [from, to]. Using the full history ensures that points
+    // at the recent edge of a short timeframe still have 4 prior quarters.
+    return records
+      .map((r, index) => {
+        let ttmEps: number | null = null;
+        const eps = r.eps != null ? Number(r.eps) : null;
+
+        if (eps !== null) {
+          let sum = eps;
+          let quartersFound = 1;
+          for (let i = 1; i <= 3 && index - i >= 0; i++) {
+            const prior = records[index - i];
+            if (prior.eps !== null) {
+              sum += Number(prior.eps);
+              quartersFound++;
+            }
+          }
+          if (quartersFound === 4 && sum > 0) {
+            ttmEps = sum;
+          }
+        }
+
+        return {
+          date: r.date.toISOString().split('T')[0],
+          peRatio: r.peRatio != null ? Number(r.peRatio) : null,
+          priceToFcf: r.priceToFcf != null ? Number(r.priceToFcf) : null,
+          fcf: r.fcf != null ? Number(r.fcf) : null,
+          eps,
+          ttmEps,
+          revenueGrowthYoy: r.revenueGrowthYoy != null ? Number(r.revenueGrowthYoy) : null,
+          roe: r.roe != null ? Number(r.roe) : null,
+          debtToEquity: r.debtToEquity != null ? Number(r.debtToEquity) : null,
+          // BigInt→Number is safe for these fields: max value ~3.5e12 (share count × price) < 2^53
+          ebitdaTtm: r.ebitdaTtm != null ? Number(r.ebitdaTtm) : null,
+          dilutedShares: r.dilutedShares != null ? Number(r.dilutedShares) : null,
+          totalDebt: r.totalDebt != null ? Number(r.totalDebt) : null,
+          cashAndEquivalents: r.cashAndEquivalents != null ? Number(r.cashAndEquivalents) : null,
+          epsGrowthYoy: r.epsGrowthYoy != null ? Number(r.epsGrowthYoy) : null,
+          roic: r.roic != null ? Number(r.roic) : null,
+        };
+      })
+      .filter((dp) => {
+        const d = new Date(dp.date);
+        return d >= from && d <= to;
+      });
   }
 
   private calculateDateRange(timeframe: string): { from: Date; to: Date } {

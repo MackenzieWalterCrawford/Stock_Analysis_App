@@ -29,9 +29,16 @@ export interface FundamentalDataPoint {
   priceToFcf: number | null;
   fcf: number | null;
   eps: number | null;
+  ttmEps: number | null;
   revenueGrowthYoy: number | null;
   roe: number | null;
   debtToEquity: number | null;
+  ebitdaTtm: number | null;
+  dilutedShares: number | null;
+  totalDebt: number | null;
+  cashAndEquivalents: number | null;
+  epsGrowthYoy: number | null;
+  roic: number | null;
 }
 
 export type MetricKey =
@@ -41,7 +48,10 @@ export type MetricKey =
   | 'eps'
   | 'revenueGrowthYoy'
   | 'roe'
-  | 'debtToEquity';
+  | 'debtToEquity'
+  | 'evEbitda'
+  | 'peg'
+  | 'roic';
 
 export interface MetricConfig {
   key: MetricKey;
@@ -60,4 +70,9 @@ export const METRICS: MetricConfig[] = [
   { key: 'revenueGrowthYoy', label: 'Revenue Growth',  color: '#C9A227', formatValue: (v) => v.toFixed(1) + '%' },
   { key: 'roe',              label: 'Return on Equity', color: '#5F31A8', formatValue: (v) => (v * 100).toFixed(1) + '%' },
   { key: 'debtToEquity',     label: 'Debt / Equity',    color: '#565044', formatValue: (v) => v.toFixed(2) + 'x' },
+  { key: 'evEbitda',         label: 'EV/EBITDA',        color: '#3A7DCF', formatValue: (v) => v.toFixed(1) + 'x' },
+  { key: 'peg',              label: 'PEG Ratio',        color: '#B5446E', formatValue: (v) => v.toFixed(2) },
+  // ROIC: stored as decimal fraction (0.18 = 18%). mergeData multiplies by 100 once;
+  // formatValue appends % with no second multiply. Net: 0.18 → 18.0%.
+  { key: 'roic',             label: 'ROIC',             color: '#2E9E5B', formatValue: (v) => v.toFixed(1) + '%' },
 ];

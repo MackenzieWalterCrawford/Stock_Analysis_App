@@ -43,6 +43,13 @@ model FinancialRatio {
   revenueGrowthYoy Decimal? @db.Decimal(8, 4)
   roe              Decimal? @db.Decimal(8, 4)
   debtToEquity     Decimal? @db.Decimal(12, 4)
+  // --- columns added for EV/EBITDA, P/FCF, PEG, ROIC (migration: add_ratio_ttm_components) ---
+  ebitdaTtm        BigInt?
+  dilutedShares    BigInt?
+  totalDebt        BigInt?
+  cashAndEquivalents BigInt?
+  epsGrowthYoy     Decimal? @db.Decimal(8, 4)
+  roic             Decimal? @db.Decimal(8, 4)
   period           String?  @db.VarChar(20)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
