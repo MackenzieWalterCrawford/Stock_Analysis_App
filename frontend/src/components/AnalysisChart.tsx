@@ -28,15 +28,14 @@ interface MergedRow {
   date: string;
   price: number;
   peRatio: number | null;
-  priceToFcf: number | null;
-  fcf: number | null;
   eps: number | null;
   revenueGrowthYoy: number | null;
-  roe: number | null;
-  debtToEquity: number | null;
   evEbitda: number | null;
   peg: number | null;
   roic: number | null;
+  fcfYield: number | null;
+  priceToBook: number | null;
+  debtToEbitda: number | null;
 }
 
 function mergeData(
@@ -62,12 +61,6 @@ function mergeData(
       const shares = fund?.dilutedShares ?? null;
       const marketCap = shares != null && shares > 0 ? p.close * shares : null;
 
-      // P/FCF: live marketCap / TTM FCF; fall back to stored ratio if marketCap unavailable
-      const priceToFcf =
-        marketCap != null && fund?.fcf != null && fund.fcf > 0
-          ? marketCap / fund.fcf
-          : fund?.priceToFcf ?? null;
-
       // EV/EBITDA: (marketCap + totalDebt - cashAndEquivalents) / TTM EBITDA
       let evEbitda: number | null = null;
       if (
@@ -90,6 +83,24 @@ function mergeData(
       // ROIC: single multiply from decimal fraction to percent (0.18 → 18.0)
       const roic = fund?.roic != null ? fund.roic * 100 : null;
 
+      // FCF Yield: TTM FCF / market cap, expressed as a percentage
+      const fcfYield =
+        marketCap != null && fund?.fcf != null && marketCap > 0
+          ? (fund.fcf / marketCap) * 100
+          : null;
+
+      // Debt/EBITDA: total debt / TTM EBITDA
+      const debtToEbitda =
+        fund?.totalDebt != null && fund?.ebitdaTtm != null && fund.ebitdaTtm > 0
+          ? fund.totalDebt / fund.ebitdaTtm
+          : null;
+
+      // P/B: market cap / total stockholders' equity (book value)
+      const priceToBook =
+        marketCap != null && fund?.totalEquity != null && fund.totalEquity > 0
+          ? marketCap / fund.totalEquity
+          : null;
+
       return {
         date: dateKey,
         price: p.close,
@@ -97,15 +108,14 @@ function mergeData(
           fund?.ttmEps != null && fund.ttmEps > 0
             ? p.close / fund.ttmEps
             : fund?.peRatio ?? null,
-        priceToFcf,
-        fcf: fund?.fcf != null ? fund.fcf / 1e9 : null,
-        eps: fund?.eps ?? null,
+        eps: fund?.ttmEps ?? null,
         revenueGrowthYoy: fund?.revenueGrowthYoy ?? null,
-        roe: fund?.roe != null ? fund.roe * 100 : null,
-        debtToEquity: fund?.debtToEquity ?? null,
         evEbitda,
         peg,
         roic,
+        fcfYield,
+        priceToBook,
+        debtToEbitda,
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date));

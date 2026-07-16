@@ -7,9 +7,10 @@ import { FundamentalFetcher } from './fundamentalFetcher';
 // Types
 // ============================================================================
 
-// Extends the stale Prisma-generated row type with columns added by the
-// add_ratio_ttm_components migration. The generated client will be regenerated
-// once the DB is available; until then this interface bridges the gap.
+// Mirrors the Prisma-generated FinancialRatio payload type. The generated
+// client now includes all columns (including totalEquity added by the
+// add_ratio_ttm_components migration), so this interface is kept as a
+// local alias for clarity rather than a workaround.
 interface FinancialRatioRow {
   id: number;
   symbol: string;
@@ -28,6 +29,7 @@ interface FinancialRatioRow {
   dilutedShares: bigint | null;
   totalDebt: bigint | null;
   cashAndEquivalents: bigint | null;
+  totalEquity: bigint | null;
   epsGrowthYoy: Prisma.Decimal | null;
   roic: Prisma.Decimal | null;
   period: string | null;
@@ -49,6 +51,8 @@ export interface FundamentalDataPoint {
   dilutedShares: number | null;    // current quarter diluted share count
   totalDebt: number | null;        // current quarter total debt in dollars
   cashAndEquivalents: number | null; // current quarter cash and equivalents in dollars
+  // current-quarter total stockholders' equity / book value, in dollars
+  totalEquity: number | null;
   epsGrowthYoy: number | null;     // decimal fraction e.g. 0.15 = 15%
   roic: number | null;             // decimal fraction e.g. 0.18 = 18%
 }
@@ -70,9 +74,9 @@ export class FundamentalService {
 
   async getFundamentals(symbol: string, timeframe: string): Promise<FundamentalDataPoint[]> {
     const normalizedSymbol = symbol.toUpperCase().trim();
-    // v3: payload now includes ebitdaTtm, dilutedShares, totalDebt, cashAndEquivalents,
-    // epsGrowthYoy, and roic; bumping retires v2 entries that lack these fields.
-    const cacheKey = `fundamental:history:v3:${normalizedSymbol}:${timeframe}`;
+    // v4: payload now includes totalEquity (book value); bumping retires v3 entries
+    // that lack this field.
+    const cacheKey = `fundamental:history:v4:${normalizedSymbol}:${timeframe}`;
 
     // Layer 1: Cache (skip if all peRatios are null — prices may not have been ready yet)
     try {
@@ -134,13 +138,13 @@ export class FundamentalService {
 
     // Invalidate all cached timeframes
     try {
-      const pattern = `fundamental:history:v3:${normalizedSymbol}:*`;
+      const pattern = `fundamental:history:v4:${normalizedSymbol}:*`;
       // Use generic keys scan — CacheService exposes the client via the invalidateStock pattern
       // We'll just delete the known timeframes
       const timeframes: Timeframe[] = ['5Y', '1Y', 'YTD', '1M', '1W'];
       await Promise.all(
         timeframes.map((tf) =>
-          this.cacheService.delete(`fundamental:history:v3:${normalizedSymbol}:${tf}`)
+          this.cacheService.delete(`fundamental:history:v4:${normalizedSymbol}:${tf}`)
         )
       );
       void pattern; // suppress lint warning
@@ -156,14 +160,11 @@ export class FundamentalService {
   // --------------------------------------------------------------------------
 
   private async queryDatabase(symbol: string): Promise<FinancialRatioRow[]> {
-    // Cast to FinancialRatioRow: the Prisma generated client predates the schema
-    // migration that added ebitdaTtm, dilutedShares, totalDebt, cashAndEquivalents,
-    // epsGrowthYoy, roic. The runtime columns exist; only the stale type lacks them.
     const rows = await this.prisma.financialRatio.findMany({
       where: { symbol },
       orderBy: { date: 'asc' },
     });
-    return rows as unknown as FinancialRatioRow[];
+    return rows;
   }
 
   private convertToDataPoints(
@@ -209,6 +210,7 @@ export class FundamentalService {
           dilutedShares: r.dilutedShares != null ? Number(r.dilutedShares) : null,
           totalDebt: r.totalDebt != null ? Number(r.totalDebt) : null,
           cashAndEquivalents: r.cashAndEquivalents != null ? Number(r.cashAndEquivalents) : null,
+          totalEquity: r.totalEquity != null ? Number(r.totalEquity) : null,
           epsGrowthYoy: r.epsGrowthYoy != null ? Number(r.epsGrowthYoy) : null,
           roic: r.roic != null ? Number(r.roic) : null,
         };

@@ -48,6 +48,7 @@ model FinancialRatio {
   dilutedShares    BigInt?
   totalDebt        BigInt?
   cashAndEquivalents BigInt?
+  totalEquity      BigInt?
   epsGrowthYoy     Decimal? @db.Decimal(8, 4)
   roic             Decimal? @db.Decimal(8, 4)
   period           String?  @db.VarChar(20)

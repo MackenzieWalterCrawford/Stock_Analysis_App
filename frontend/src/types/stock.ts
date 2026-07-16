@@ -37,21 +37,21 @@ export interface FundamentalDataPoint {
   dilutedShares: number | null;
   totalDebt: number | null;
   cashAndEquivalents: number | null;
+  totalEquity: number | null;
   epsGrowthYoy: number | null;
   roic: number | null;
 }
 
 export type MetricKey =
   | 'peRatio'
-  | 'priceToFcf'
-  | 'fcf'
   | 'eps'
   | 'revenueGrowthYoy'
-  | 'roe'
-  | 'debtToEquity'
   | 'evEbitda'
   | 'peg'
-  | 'roic';
+  | 'roic'
+  | 'fcfYield'
+  | 'priceToBook'
+  | 'debtToEbitda';
 
 export interface MetricConfig {
   key: MetricKey;
@@ -63,16 +63,15 @@ export interface MetricConfig {
 // Colors come from the Vantage categorical chart series (NOT market
 // green/red, which are reserved strictly for price up/down).
 export const METRICS: MetricConfig[] = [
-  { key: 'peRatio',          label: 'P/E Ratio',        color: '#9264DC', formatValue: (v) => v.toFixed(1) + 'x' },
-  { key: 'priceToFcf',       label: 'P/FCF',            color: '#CF7A3A', formatValue: (v) => v.toFixed(1) + 'x' },
-  { key: 'fcf',              label: 'Free Cash Flow',   color: '#2F8E8E', formatValue: (v) => '$' + (v / 1e9).toFixed(1) + 'B' },
-  { key: 'eps',              label: 'EPS',              color: '#4A6B8A', formatValue: (v) => '$' + v.toFixed(2) },
+  { key: 'peRatio',          label: 'P/E Ratio',       color: '#9264DC', formatValue: (v) => v.toFixed(1) + 'x' },
+  { key: 'eps',              label: 'EPS (TTM)',        color: '#4A6B8A', formatValue: (v) => '$' + v.toFixed(2) },
   { key: 'revenueGrowthYoy', label: 'Revenue Growth',  color: '#C9A227', formatValue: (v) => v.toFixed(1) + '%' },
-  { key: 'roe',              label: 'Return on Equity', color: '#5F31A8', formatValue: (v) => (v * 100).toFixed(1) + '%' },
-  { key: 'debtToEquity',     label: 'Debt / Equity',    color: '#565044', formatValue: (v) => v.toFixed(2) + 'x' },
-  { key: 'evEbitda',         label: 'EV/EBITDA',        color: '#3A7DCF', formatValue: (v) => v.toFixed(1) + 'x' },
+  { key: 'evEbitda',         label: 'EV/EBITDA',       color: '#3A7DCF', formatValue: (v) => v.toFixed(1) + 'x' },
   { key: 'peg',              label: 'PEG Ratio',        color: '#B5446E', formatValue: (v) => v.toFixed(2) },
   // ROIC: stored as decimal fraction (0.18 = 18%). mergeData multiplies by 100 once;
   // formatValue appends % with no second multiply. Net: 0.18 → 18.0%.
   { key: 'roic',             label: 'ROIC',             color: '#2E9E5B', formatValue: (v) => v.toFixed(1) + '%' },
+  { key: 'fcfYield',         label: 'FCF Yield',        color: '#2F8E8E', formatValue: (v) => v.toFixed(1) + '%' },
+  { key: 'priceToBook',      label: 'P/B Ratio',        color: '#CF7A3A', formatValue: (v) => v.toFixed(2) + 'x' },
+  { key: 'debtToEbitda',     label: 'Debt/EBITDA',      color: '#565044', formatValue: (v) => v.toFixed(2) + 'x' },
 ];

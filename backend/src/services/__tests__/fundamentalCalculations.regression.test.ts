@@ -825,6 +825,120 @@ describe('epsGrowthYoy calculation', () => {
 });
 
 // ===========================================================================
+// New field: totalEquity persistence (metrics overhaul)
+// ===========================================================================
+
+describe('totalEquity field', () => {
+  it('populates totalEquity as a BigInt from totalStockholdersEquity for full-window quarters', async () => {
+    // Arrange: 4 quarters each with totalStockholdersEquity=1_500_000
+    // For the quarter at index 3 (the first full-window record), computeTtmAndRatios
+    // should set totalEquity = BigInt(1_500_000) (current-quarter point-in-time value).
+    const quarters = [
+      makeQuarter('2023-03-31', { totalStockholdersEquity: 1_500_000 }),
+      makeQuarter('2023-06-30', { totalStockholdersEquity: 1_500_000 }),
+      makeQuarter('2023-09-30', { totalStockholdersEquity: 1_500_000 }),
+      makeQuarter('2023-12-31', { totalStockholdersEquity: 1_500_000 }),
+    ];
+
+    const prisma = makePrisma();
+    mockAxios(buildFmpPayload(quarters));
+    const records = await syncAndCollect(prisma);
+
+    // The 4th record (index 3) is the first with a full 4-quarter window
+    const lastRecord = records[3];
+    expect(lastRecord.totalEquity).toBe(BigInt(1_500_000));
+  });
+
+  it('sets totalEquity to null when totalStockholdersEquity is missing in current quarter', async () => {
+    // Arrange: only Q4 has null equity (missing balance sheet row)
+    const q4 = makeQuarter('2023-12-31', {});
+    q4.balance.totalStockholdersEquity = null as unknown as number;
+
+    const quarters = [
+      makeQuarter('2023-03-31', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-06-30', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-09-30', { totalStockholdersEquity: 1_000_000 }),
+      q4,
+    ];
+
+    const prisma = makePrisma();
+    mockAxios(buildFmpPayload(quarters));
+    const records = await syncAndCollect(prisma);
+
+    const lastRecord = records[3];
+    expect(lastRecord.totalEquity).toBeNull();
+  });
+
+  it('totalEquity is null for records before the 4-quarter window (index < 3)', async () => {
+    // computeTtmAndRatios returns the record unchanged for index < 3,
+    // so totalEquity (set only inside the TTM block) must remain null.
+    const quarters = [
+      makeQuarter('2023-03-31', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-06-30', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-09-30', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-12-31', { totalStockholdersEquity: 1_000_000 }),
+    ];
+
+    const prisma = makePrisma();
+    mockAxios(buildFmpPayload(quarters));
+    const records = await syncAndCollect(prisma);
+
+    for (let i = 0; i < 3; i++) {
+      expect(records[i].totalEquity).toBeNull();
+    }
+  });
+
+  it('totalEquity in the upsert payload matches the current-quarter totalStockholdersEquity', async () => {
+    // Arrange: Q4 has a distinct equity value (2_000_000) vs earlier quarters (1_000_000)
+    // The upsert for Q4 should include totalEquity = BigInt(2_000_000)
+    const quarters = [
+      makeQuarter('2023-03-31', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-06-30', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-09-30', { totalStockholdersEquity: 1_000_000 }),
+      makeQuarter('2023-12-31', { totalStockholdersEquity: 2_000_000 }),
+    ];
+
+    const prisma = makePrisma();
+    mockAxios(buildFmpPayload(quarters));
+    await syncAndCollect(prisma);
+
+    // Find the upsert call for the Q4 date
+    type UpsertArgs = {
+      where: { symbol_date: { symbol: string; date: Date } };
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    };
+
+    const q4Call = (prisma.financialRatio.upsert as jest.Mock).mock.calls.find(
+      (args: unknown[]) => {
+        const opts = args[0] as UpsertArgs;
+        return opts?.where?.symbol_date?.date?.toISOString().slice(0, 10) === '2023-12-31';
+      }
+    );
+    expect(q4Call).toBeDefined();
+    const createPayload = (q4Call![0] as UpsertArgs).create;
+    expect(createPayload.totalEquity).toBe(BigInt(2_000_000));
+  });
+
+  it('totalEquity rounds fractional totalStockholdersEquity values (BigInt conversion)', async () => {
+    // FMP sometimes returns fractional values; BigInt(Math.round()) should handle it
+    const quarters = [
+      makeQuarter('2023-03-31', { totalStockholdersEquity: 1_000_000.7 }),
+      makeQuarter('2023-06-30', { totalStockholdersEquity: 1_000_000.7 }),
+      makeQuarter('2023-09-30', { totalStockholdersEquity: 1_000_000.7 }),
+      makeQuarter('2023-12-31', { totalStockholdersEquity: 1_000_000.7 }),
+    ];
+
+    const prisma = makePrisma();
+    mockAxios(buildFmpPayload(quarters));
+    const records = await syncAndCollect(prisma);
+
+    const lastRecord = records[3];
+    expect(lastRecord.totalEquity).toBe(BigInt(1_000_001)); // Math.round(1_000_000.7)
+  });
+});
+
+// ===========================================================================
 // 7. Insufficient quarters: TTM-derived fields stay null before index 3
 // ===========================================================================
 

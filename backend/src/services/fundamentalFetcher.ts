@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import { PrismaClient } from '../generated/prisma';
 import { parseISO } from 'date-fns';
-import SecEdgarFetcher, { QuarterlyEpsRecord } from './secEdgarFetcher';
+import SecEdgarFetcher, { QuarterlyEpsRecord, QuarterlyFinancialRecord } from './secEdgarFetcher';
 
 // ============================================================================
 // Types & Interfaces
@@ -85,6 +85,7 @@ export interface FundamentalRecord {
   dilutedShares: bigint | null;
   totalDebt: bigint | null;
   cashAndEquivalents: bigint | null;
+  totalEquity: bigint | null;
   epsGrowthYoy: number | null;  // decimal fraction e.g. 0.15 = 15%
   roic: number | null;          // decimal fraction e.g. 0.18 = 18%
   period: string | null;
@@ -164,17 +165,50 @@ export class FundamentalFetcher {
         balanceSheetData
       );
 
-      const cik = incomeData.find((d) => d.cik)?.cik ?? null;
+      // Resolve CIK (FMP income statements carry it; on the free tier those are
+      // empty/402, so fall back to SEC's ticker→CIK map).
+      let cik = incomeData.find((d) => d.cik)?.cik ?? null;
+      if (cik === null) {
+        cik = await this.secEdgar.resolveCik(normalizedSymbol);
+      }
+
+      // Free-tier fallback: when FMP returns no statement data (all 402), source
+      // the full quarterly financial series from SEC EDGAR company-facts so the
+      // TTM ratios (EV/EBITDA, ROIC, Debt-to-EBITDA, FCF Yield, P/B, revenue
+      // growth) can still be computed. Populates the same merged/rawQuarters
+      // arrays the FMP path builds, so the downstream pipeline is unchanged.
+      if (merged.length === 0 && cik !== null) {
+        try {
+          const finRecords = await this.secEdgar.fetchQuarterlyFinancials(cik);
+          const built = this.buildFromSecFinancials(normalizedSymbol, finRecords);
+          merged.push(...built.records);
+          rawQuarters.push(...built.rawQuarters);
+        } catch (secError) {
+          console.error(
+            `[FundamentalFetcher] SEC financials fetch failed for ${normalizedSymbol}:`,
+            secError instanceof Error ? secError.message : String(secError)
+          );
+        }
+      }
+
+      // Run index-based TTM math on the pure quarterly series BEFORE merging
+      // SEC-EDGAR EPS-only rows. Interleaved EPS rows (null revenue/ebitda) would
+      // corrupt the 4-/8-quarter rolling windows used by these two functions.
+      const withGrowth = this.calculateRevenueGrowthYoy(merged, rawQuarters);
+      const withTtm = this.computeTtmAndRatios(withGrowth, rawQuarters);
+
+      // Merge deep-history SEC EPS (dates not already covered) into the records
+      // array only, then re-sort by date ascending.
       if (cik !== null) {
         try {
           const secRecords: QuarterlyEpsRecord[] = await this.secEdgar.fetchQuarterlyEps(cik);
           const existingDates = new Set(
-            merged.map((r) => r.date.toISOString().slice(0, 10))
+            withTtm.map((r) => r.date.toISOString().slice(0, 10))
           );
           for (const sec of secRecords) {
             const dateKey = sec.end.toISOString().slice(0, 10);
             if (!existingDates.has(dateKey)) {
-              merged.push({
+              withTtm.push({
                 symbol: normalizedSymbol,
                 date: sec.end,
                 peRatio: null,
@@ -189,38 +223,15 @@ export class FundamentalFetcher {
                 dilutedShares: null,
                 totalDebt: null,
                 cashAndEquivalents: null,
+                totalEquity: null,
                 epsGrowthYoy: null,
                 roic: null,
                 period: sec.period,
               });
-              // Push a blank raw entry so indexes remain aligned after re-sort
-              rawQuarters.push({
-                revenue: null,
-                eps: sec.eps,
-                epsdiluted: null,
-                operatingIncome: null,
-                depreciationAndAmortization: null,
-                ebitda: null,
-                incomeTaxExpense: null,
-                incomeBeforeTax: null,
-                freeCashFlow: null,
-                totalDebt: null,
-                totalStockholdersEquity: null,
-                cashAndCashEquivalents: null,
-                weightedAverageShsOutDil: null,
-              });
               existingDates.add(dateKey);
             }
           }
-          // Re-sort both arrays together by date
-          const combined = merged.map((r, i) => ({ record: r, raw: rawQuarters[i] }));
-          combined.sort((a, b) => a.record.date.getTime() - b.record.date.getTime());
-          merged.length = 0;
-          rawQuarters.length = 0;
-          for (const { record, raw } of combined) {
-            merged.push(record);
-            rawQuarters.push(raw);
-          }
+          withTtm.sort((a, b) => a.date.getTime() - b.date.getTime());
         } catch (secError) {
           console.error(
             `[FundamentalFetcher] SEC EDGAR fetch failed for ${normalizedSymbol}:`,
@@ -229,8 +240,6 @@ export class FundamentalFetcher {
         }
       }
 
-      const withGrowth = this.calculateRevenueGrowthYoy(merged, rawQuarters);
-      const withTtm = this.computeTtmAndRatios(withGrowth, rawQuarters);
       const withPe = await this.calculatePeFromPrices(normalizedSymbol, withTtm);
 
       result.recordsFetched = withPe.length;
@@ -516,6 +525,7 @@ export class FundamentalFetcher {
         dilutedShares: null,    // filled in computeTtmAndRatios
         totalDebt: null,        // filled in computeTtmAndRatios
         cashAndEquivalents: null, // filled in computeTtmAndRatios
+        totalEquity: null,      // filled in computeTtmAndRatios
         epsGrowthYoy: null,     // filled in computeTtmAndRatios
         roic: null,             // filled in computeTtmAndRatios
         period: income?.period ?? null,
@@ -546,6 +556,62 @@ export class FundamentalFetcher {
     const sortedRaw = combined.map((c) => c.raw);
 
     return { records: sortedRecords, rawQuarters: sortedRaw };
+  }
+
+  /**
+   * Map SEC-EDGAR quarterly financials into the same FundamentalRecord seeds +
+   * QuarterlyRaw parallel array that mergeFundamentals produces from FMP data,
+   * so the downstream growth/TTM/ratio pipeline runs unchanged. Records arrive
+   * ascending by date; TTM-derived fields are left null and filled downstream.
+   */
+  private buildFromSecFinancials(
+    symbol: string,
+    finRecords: QuarterlyFinancialRecord[]
+  ): { records: FundamentalRecord[]; rawQuarters: QuarterlyRaw[] } {
+    const records: FundamentalRecord[] = [];
+    const rawQuarters: QuarterlyRaw[] = [];
+
+    for (const r of finRecords) {
+      records.push({
+        symbol,
+        date: r.end,
+        peRatio: null,
+        priceToFcf: null,
+        // per-quarter FCF; overwritten with TTM in computeTtmAndRatios
+        fcf: r.freeCashFlow != null ? BigInt(Math.round(r.freeCashFlow)) : null,
+        eps: r.epsDiluted,
+        revenue: r.revenue != null ? BigInt(Math.round(r.revenue)) : null,
+        revenueGrowthYoy: null,
+        roe: null,
+        debtToEquity: null,
+        ebitdaTtm: null,
+        dilutedShares: null,
+        totalDebt: null,
+        cashAndEquivalents: null,
+        totalEquity: null,
+        epsGrowthYoy: null,
+        roic: null,
+        period: r.period,
+      });
+
+      rawQuarters.push({
+        revenue: r.revenue,
+        eps: r.epsDiluted,
+        epsdiluted: r.epsDiluted,
+        operatingIncome: r.operatingIncome,
+        depreciationAndAmortization: r.depreciationAndAmortization,
+        ebitda: null, // derived from operatingIncome + D&A in computeTtmAndRatios
+        incomeTaxExpense: r.incomeTaxExpense,
+        incomeBeforeTax: r.incomeBeforeTax,
+        freeCashFlow: r.freeCashFlow,
+        totalDebt: r.totalDebt,
+        totalStockholdersEquity: r.stockholdersEquity,
+        cashAndCashEquivalents: r.cashAndEquivalents,
+        weightedAverageShsOutDil: r.dilutedShares,
+      });
+    }
+
+    return { records, rawQuarters };
   }
 
   private computeTtmAndRatios(
@@ -594,6 +660,10 @@ export class FundamentalFetcher {
       const cashAndEquivalents: bigint | null =
         curRaw.cashAndCashEquivalents != null
           ? BigInt(Math.round(curRaw.cashAndCashEquivalents))
+          : null;
+      const totalEquity: bigint | null =
+        curRaw.totalStockholdersEquity != null
+          ? BigInt(Math.round(curRaw.totalStockholdersEquity))
           : null;
 
       // Debt-to-equity: balance sheet based override
@@ -667,6 +737,7 @@ export class FundamentalFetcher {
         dilutedShares,
         totalDebt,
         cashAndEquivalents,
+        totalEquity,
         roic,
         debtToEquity,
         epsGrowthYoy,
@@ -791,6 +862,7 @@ export class FundamentalFetcher {
               dilutedShares: record.dilutedShares,
               totalDebt: record.totalDebt,
               cashAndEquivalents: record.cashAndEquivalents,
+              totalEquity: record.totalEquity,
               epsGrowthYoy: record.epsGrowthYoy,
               roic: record.roic,
               period: record.period,
